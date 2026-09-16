@@ -49,7 +49,22 @@ window.posAPI = {
     });
     return await res.json();
   },
-// --- CLOUD STORE SETTINGS MANAGEMENT ---
+
+  // --- NEW: UPDATE ACCOUNT CREDENTIALS & STORE INFO ---
+  updateStoreProfile: async (profileData) => {
+    try {
+      const res = await fetch(`${CLOUD_API}/store/profile`, {
+        method: 'PUT',
+        headers: getHeaders(),
+        body: JSON.stringify(profileData)
+      });
+      return await res.json();
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  },
+
+  // --- CLOUD STORE SETTINGS MANAGEMENT ---
   getCloudSettings: async () => {
     try {
       const res = await fetch(`${CLOUD_API}/store/settings`, { headers: getHeaders() });
@@ -70,6 +85,7 @@ window.posAPI = {
       return { success: false, error: e.message };
     }
   },
+
   // --- MULTI-TENANT INVENTORY ---
   getProducts: async () => {
     try {
@@ -176,7 +192,7 @@ window.posAPI = {
       
       items.forEach(item => {
          const p = products.find(prod => prod.barcode === item.barcode);
-         const cost = p ? (p.cost_price || 0) : (item.price || 0); // fallback if cost price missing
+         const cost = p ? (p.cost_price || 0) : (item.price || 0); 
          totalCost += (cost * (item.qty || 0));
       });
 
