@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
 
-// NEW: Universal Web-Safe CSV Downloader
 const triggerBrowserDownload = (filename, csvContent) => {
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const link = document.createElement("a");
@@ -24,9 +23,20 @@ export default function Dashboard({ theme, setTheme }) {
   const [emailError, setEmailError] = useState(''); 
   const [isShuttingDown, setIsShuttingDown] = useState(false);
 
-  useEffect(() => { fetchData(); }, []);
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
 
-  // BULLETPROOF FETCH: If anything crashes, it falls back to 0 so the UI doesn't freeze
+  useEffect(() => { 
+    fetchData(); 
+    checkPendingQueue();
+  }, []);
+
+  const checkPendingQueue = async () => {
+    if (window.posAPI.getPendingSalesCount) {
+      const count = await window.posAPI.getPendingSalesCount();
+      setPendingSyncCount(count);
+    }
+  };
+
   const fetchData = async () => {
     try {
       const s = await window.posAPI.getDashboardStats();
@@ -53,14 +63,29 @@ export default function Dashboard({ theme, setTheme }) {
     return () => clearInterval(timer);
   }, [isClosing, timeLeft, isShuttingDown]);
 
-  // FIXED: Standardized Web Download for Sales
+  const handleManualSync = async () => {
+    if (!navigator.onLine) return alert("❌ Please connect to the internet first!");
+    
+    alert(`Starting sync for ${pendingSyncCount} offline bills... Please wait.`);
+    const result = await window.posAPI.syncPendingSales();
+    
+    if (result.success) {
+      alert(`✅ Successfully synced ${result.count} bills to the Cloud Server!`);
+      setPendingSyncCount(0);
+      fetchData(); 
+    } else {
+      alert(`⚠️ Synced ${result.count} bills, but ${result.remaining} failed. Ensure internet is stable and try again.`);
+      setPendingSyncCount(result.remaining);
+    }
+  };
+
   const downloadSales = async () => {
     if (salesHistory.length === 0) return alert("No sales data available.");
     
     let csv = "Invoice Number,Date,Type,Customer Mobile,Total Amount,Tax Amount\n";
     salesHistory.forEach(sale => {
       let saleDate = new Date(sale.created_at);
-      if (isNaN(saleDate.getTime())) saleDate = new Date(); // Fallback
+      if (isNaN(saleDate.getTime())) saleDate = new Date(); 
       const dateStr = saleDate.toLocaleDateString('en-IN');
       csv += `${sale.invoice_number},${dateStr},${sale.type},${sale.customer_mobile},${sale.total_amount},${sale.tax_amount}\n`;
     });
@@ -70,14 +95,12 @@ export default function Dashboard({ theme, setTheme }) {
     alert("Sales report downloaded successfully!");
   };
 
-  // FIXED: Standardized Web Download for Inventory
   const downloadInventory = async () => {
     const inventory = await window.posAPI.getProducts();
     if (!Array.isArray(inventory) || inventory.length === 0) return alert("No inventory data available.");
     
     let csv = "Barcode,Item Name,Category,Size,Color,Stock Qty,Cost Price,Selling Price\n";
     inventory.forEach(p => {
-      // Replaces quotes inside product names so they don't break the CSV format
       const safeName = p.name ? p.name.replace(/"/g, '""') : 'N/A';
       csv += `${p.barcode},"${safeName}",${p.category},${p.size || 'N/A'},${p.color || 'N/A'},${p.stock_quantity},${p.cost_price},${p.price}\n`;
     });
@@ -88,6 +111,13 @@ export default function Dashboard({ theme, setTheme }) {
   };
 
   const startClosingSequence = () => {
+    if (pendingSyncCount > 0) {
+      return alert(`⚠️ ACTION REQUIRED: You have ${pendingSyncCount} unsynced bills saved offline! \n\nPlease connect to Wi-Fi and click "Sync Offline Data" before ending the day.`);
+    }
+    if (!navigator.onLine) {
+      return alert(`⚠️ NETWORK OFFLINE: You cannot end the day without an internet connection. Please connect to Wi-Fi so DRIX can generate your WhatsApp reports.`);
+    }
+
     if (window.confirm("Are you ready to close the store? Automated reports are dispatched by the Cloud nightly at 10:00 PM.")) {
       setIsClosing(true);
       setEmailError('');
@@ -97,8 +127,6 @@ export default function Dashboard({ theme, setTheme }) {
 
   const sendEmails = async () => {
     setEmailStatus('sending');
-    
-    // Simulate server communication for the UI sequence since the actual cron job runs on the server at night
     setTimeout(() => {
       setEmailStatus('success');
     }, 2000);
@@ -106,12 +134,11 @@ export default function Dashboard({ theme, setTheme }) {
 
   const triggerShutdown = () => {
     setIsShuttingDown(true);
-    // Universal Shutdown: Safely handles both Electron and Web
     setTimeout(() => {
       if (window.posAPI.exitApp) {
-        window.posAPI.exitApp(); // Works in Electron
+        window.posAPI.exitApp(); 
       } else {
-        window.location.reload(); // Works in Web Browser
+        window.location.reload(); 
       }
     }, 4000);
   };
@@ -197,6 +224,12 @@ export default function Dashboard({ theme, setTheme }) {
         <h2 style={{ margin: 0, color: colors.text, fontSize: '2rem', fontWeight: '700', textShadow: '0 2px 10px rgba(0,0,0,0.1)' }}>Overview</h2>
         
         <div style={{ display: 'flex', gap: '10px' }}>
+          {pendingSyncCount > 0 && (
+            <button onClick={handleManualSync} style={{ ...btnStyle, background: 'rgba(255, 149, 0, 0.2)', border: `1px solid ${colors.accentOrange}`, color: colors.accentOrange, animation: 'pulse 2s infinite' }}>
+              ⚠️ Sync Offline Data ({pendingSyncCount})
+            </button>
+          )}
+
           <button onClick={downloadSales} style={btnStyle} onMouseOver={(e) => e.target.style.background = isDark ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.8)'} onMouseOut={(e) => e.target.style.background = colors.glassBg}>
             📥 Sales CSV
           </button>

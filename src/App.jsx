@@ -4,6 +4,9 @@ import Inventory from './components/Inventory';
 import Dashboard from './components/Dashboard';
 import SuperAdmin from './components/SuperAdmin';
 
+// NEW: Detects if running inside the Desktop App so we can hide the download button
+const isElectron = typeof navigator !== 'undefined' && navigator.userAgent.toLowerCase().includes('electron');
+
 export default function App() {
   const [isBooting, setIsBooting] = useState(true);
 
@@ -16,7 +19,6 @@ export default function App() {
   const [authError, setAuthError] = useState(''); 
   const [storeDetails, setStoreDetails] = useState({ storeName: 'DRIX POS Platform', storeAddress: '', mobile: '' });
   
-  // Settings States
   const [cloudSettings, setCloudSettings] = useState({ metaPhoneId: '', metaAccessToken: '' });
   const [accountForm, setAccountForm] = useState({ storeName: '', storeAddress: '', username: '', password: '' });
   const [printers, setPrinters] = useState([]);
@@ -38,13 +40,12 @@ export default function App() {
           scanner: settings.scanner_prefix || ''
         });
       });
-      // Populate Account Management Form automatically
       setAccountForm(prev => ({
         ...prev,
         storeName: storeDetails.storeName,
         storeAddress: storeDetails.storeAddress,
         username: authData.username,
-        password: '' // Keep empty for security
+        password: '' 
       }));
     }
   }, [showSettings, storeDetails, authData.username]);
@@ -105,7 +106,6 @@ export default function App() {
     setAuthData({ ...authData, password: '' });
   };
 
-  // NEW: Save Store Profile & Credentials
   const handleSaveAccountProfile = async () => {
     const res = await window.posAPI.updateStoreProfile({
       storeName: accountForm.storeName,
@@ -293,7 +293,6 @@ export default function App() {
               <button onClick={() => setShowSettings(false)} style={{ background: 'none', border: 'none', color: colors.textMuted, fontSize: '1.5rem', cursor: 'pointer' }}>✕</button>
             </div>
 
-            {/* --- 1. ACCOUNT MANAGEMENT (STORE PROFILE & LOGIN) --- */}
             <div style={{ padding: '20px 0', borderBottom: `1px solid ${colors.glassBorder}` }}>
               <strong style={{ display: 'block', fontSize: '1.05rem', marginBottom: '5px' }}>Account & Store Profile</strong>
               <span style={{ fontSize: '0.85rem', color: colors.textMuted, display: 'block', marginBottom: '15px' }}>
@@ -306,7 +305,7 @@ export default function App() {
                   <input 
                     type="text" 
                     disabled 
-                    value={localStorage.getItem('drix_store_id') || 'GLAMYES_MASTER'} 
+                    value={localStorage.getItem('drix_store_id') || 'DRIX_MASTER'} 
                     style={{ width: '100%', padding: '10px', background: 'rgba(128,128,128,0.15)', border: `1px solid ${colors.glassBorder}`, borderRadius: '8px', color: colors.textMuted, marginTop: '4px', cursor: 'not-allowed', boxSizing: 'border-box' }} 
                   />
                 </div>
@@ -363,7 +362,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* --- 2. HARDWARE INTEGRATIONS --- */}
             <div style={{ padding: '20px 0', borderBottom: `1px solid ${colors.glassBorder}` }}>
               <strong style={{ display: 'block', fontSize: '1.05rem', marginBottom: '15px' }}>Hardware Integrations</strong>
               
@@ -408,7 +406,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* --- 3. WHATSAPP INTEGRATION --- */}
             <div style={{ padding: '20px 0', borderBottom: `1px solid ${colors.glassBorder}` }}>
               <strong style={{ display: 'block', fontSize: '1.05rem', marginBottom: '5px' }}>WhatsApp Cloud API Integration</strong>
               <span style={{ fontSize: '0.85rem', color: colors.textMuted, display: 'block', marginBottom: '15px' }}>Link your Meta Developer credentials to enable automated nightly reports.</span>
@@ -420,22 +417,23 @@ export default function App() {
               </div>
             </div>
 
-            {/* --- 4. OFFLINE RESILIENCE --- */}
-            <div style={{ padding: '20px 0', borderBottom: `1px solid ${colors.glassBorder}` }}>
-              <strong style={{ display: 'block', fontSize: '1.05rem', marginBottom: '5px' }}>Offline Resilience</strong>
-              <span style={{ fontSize: '0.85rem', color: colors.textMuted, display: 'block', marginBottom: '15px' }}>Download the native Windows Desktop Client.</span>
-              <a 
-                href="https://drive.google.com/file/d/1oOjxu1HOrlwRg6DaaK1lwwXtW2EU03qw/view?usp=sharing" 
-                target="_blank" 
-                rel="noopener noreferrer" 
-                style={{ display: 'inline-block', padding: '10px 15px', background: colors.inputBg, color: colors.text, textDecoration: 'none', borderRadius: '8px', border: `1px solid ${colors.glassBorder}`, fontSize: '0.9rem', fontWeight: 'bold' }}
-              >
-                ⬇️ Download Desktop App (.exe)
-              </a>
-            </div>
+            {/* --- 4. OFFLINE RESILIENCE (HIDDEN IN DESKTOP .EXE) --- */}
+            {!isElectron && (
+              <div style={{ padding: '20px 0', borderBottom: `1px solid ${colors.glassBorder}` }}>
+                <strong style={{ display: 'block', fontSize: '1.05rem', marginBottom: '5px' }}>Offline Resilience</strong>
+                <span style={{ fontSize: '0.85rem', color: colors.textMuted, display: 'block', marginBottom: '15px' }}>Experiencing internet issues? Download the DRIX Local Desktop Client for offline-first syncing capabilities.</span>
+                <a 
+                  href="https://drive.google.com/file/d/1G3of6_X-RWhizOyd2wOl9zzjfzgOfvQc/view?usp=sharing" 
+                  target="_blank" 
+                  rel="noopener noreferrer" 
+                  style={{ display: 'inline-block', padding: '10px 15px', background: colors.inputBg, color: colors.text, textDecoration: 'none', borderRadius: '8px', border: `1px solid ${colors.glassBorder}`, fontSize: '0.9rem', fontWeight: 'bold' }}
+                >
+                  ⬇️ Download Desktop App (.exe)
+                </a>
+              </div>
+            )}
 
-            {/* --- 5. THEME TOGGLE --- */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 0' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 0', borderBottom: `1px solid ${colors.glassBorder}` }}>
               <div>
                 <strong style={{ display: 'block', fontSize: '1.05rem' }}>Appearance Mode</strong>
                 <span style={{ fontSize: '0.85rem', color: colors.textMuted }}>Switch between Light and Dark interface.</span>

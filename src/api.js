@@ -1,29 +1,43 @@
 const CLOUD_API = 'https://glamyes-cloud-api.onrender.com/api';
-const API_KEY = 'GLAMYES_SECRET_KEY_2026';
+
+// UPDATED: Rebranded DRIX API Key to match backend
+const API_KEY = 'DRIX_SECRET_KEY_2026';
 
 const getHeaders = () => {
   return {
     'Content-Type': 'application/json',
     'x-api-key': API_KEY,
-    'x-store-id': localStorage.getItem('drix_store_id') || 'GLAMYES_MASTER'
+    'x-store-id': localStorage.getItem('drix_store_id') || 'DRIX_MASTER'
   };
 };
 
 window.posAPI = {
-  // --- AUTHENTICATION ---
+  // --- 1. HYBRID AUTHENTICATION ---
   checkUsersExist: async () => true, 
   loginUser: async (data) => {
     try {
+      if (!navigator.onLine) throw new Error("Offline");
       const res = await fetch(`${CLOUD_API}/auth/web-login`, {
         method: 'POST',
         headers: getHeaders(),
         body: JSON.stringify(data)
       });
-      return await res.json();
+      const json = await res.json();
+      
+      if (json.success) {
+        localStorage.setItem('drix_offline_user', JSON.stringify({ ...data, ...json }));
+      }
+      return json;
     } catch (e) {
-      return { success: false, error: 'Network Error connecting to DRIX Cloud.' };
+      const cached = JSON.parse(localStorage.getItem('drix_offline_user'));
+      if (cached && cached.username === data.username && cached.password === data.password && cached.storeId === data.storeId) {
+        alert("⚠️ No Internet Connection. You have been logged in using Offline Mode.");
+        return { success: true, user: cached.user, storeName: cached.storeName, storeAddress: cached.storeAddress, mobile: cached.mobile };
+      }
+      return { success: false, error: 'Network Offline. No cached login found for these credentials.' };
     }
   },
+
   // --- SUPER ADMIN CLIENT MANAGEMENT ---
   getAllStores: async () => {
     try {
@@ -50,7 +64,6 @@ window.posAPI = {
     return await res.json();
   },
 
-  // --- NEW: UPDATE ACCOUNT CREDENTIALS & STORE INFO ---
   updateStoreProfile: async (profileData) => {
     try {
       const res = await fetch(`${CLOUD_API}/store/profile`, {
@@ -86,13 +99,19 @@ window.posAPI = {
     }
   },
 
-  // --- MULTI-TENANT INVENTORY ---
+  // --- 2. HYBRID INVENTORY ---
   getProducts: async () => {
     try {
+      if (!navigator.onLine) throw new Error("Offline");
       const res = await fetch(`${CLOUD_API}/products`, { headers: getHeaders() });
-      if (!res.ok) return [];
-      return await res.json();
-    } catch (e) { return []; }
+      if (!res.ok) throw new Error("Fetch failed");
+      const products = await res.json();
+      
+      localStorage.setItem('drix_offline_products', JSON.stringify(products));
+      return products;
+    } catch (e) {
+      return JSON.parse(localStorage.getItem('drix_offline_products') || '[]');
+    }
   },
   
   getProductByBarcode: async (barcode) => {
@@ -115,15 +134,60 @@ window.posAPI = {
     return await res.json();
   },
 
-  // --- MULTI-TENANT SALES ---
+  // --- 3. HYBRID CHECKOUT (OFFLINE QUEUE) ---
   checkout: async (invoiceData) => {
-    const res = await fetch(`${CLOUD_API}/checkout`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(invoiceData) });
-    return await res.json();
+    try {
+      if (!navigator.onLine) throw new Error("Offline");
+      const res = await fetch(`${CLOUD_API}/checkout`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(invoiceData) });
+      return await res.json();
+    } catch (e) {
+      const pendingQueue = JSON.parse(localStorage.getItem('drix_pending_sales') || '[]');
+      invoiceData.isOffline = true;
+      pendingQueue.push(invoiceData);
+      localStorage.setItem('drix_pending_sales', JSON.stringify(pendingQueue));
+
+      const cachedProducts = JSON.parse(localStorage.getItem('drix_offline_products') || '[]');
+      invoiceData.items.forEach(item => {
+         const p = cachedProducts.find(prod => prod.barcode === item.barcode);
+         if (p) p.stock_quantity -= (invoiceData.type === 'RETURN' ? -item.qty : item.qty);
+      });
+      localStorage.setItem('drix_offline_products', JSON.stringify(cachedProducts));
+
+      return { success: true, invoice: invoiceData, offlineSaved: true };
+    }
   },
 
   processReturn: async (returnData) => {
     const res = await fetch(`${CLOUD_API}/checkout`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(returnData) });
     return await res.json();
+  },
+
+  // --- 4. THE SYNC ENGINE ---
+  getPendingSalesCount: async () => {
+    const pending = JSON.parse(localStorage.getItem('drix_pending_sales') || '[]');
+    return pending.length;
+  },
+
+  syncPendingSales: async () => {
+    if (!navigator.onLine) return { success: false, error: "Still offline." };
+    const pending = JSON.parse(localStorage.getItem('drix_pending_sales') || '[]');
+    if (pending.length === 0) return { success: true, count: 0 };
+
+    let successCount = 0;
+    let failedQueue = [];
+
+    for (const invoice of pending) {
+      try {
+        const res = await fetch(`${CLOUD_API}/checkout`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(invoice) });
+        if (res.ok) successCount++;
+        else failedQueue.push(invoice);
+      } catch (e) {
+        failedQueue.push(invoice);
+      }
+    }
+    
+    localStorage.setItem('drix_pending_sales', JSON.stringify(failedQueue));
+    return { success: failedQueue.length === 0, count: successCount, remaining: failedQueue.length };
   },
 
   // --- WEB-NATIVE UTILITIES ---
@@ -162,7 +226,15 @@ window.posAPI = {
     return { success: true };
   },
 
-  // --- DRIX CLOUD ANALYTICS ENGINE ---
+  getSalesHistory: async () => {
+    try {
+      const res = await fetch(`${CLOUD_API}/sales`, { headers: getHeaders() });
+      if (res.ok) return await res.json();
+    } catch (e) {}
+    return [];
+  },
+
+  // --- HYBRID DASHBOARD STATS ---
   getDashboardStats: async () => {
     const products = await window.posAPI.getProducts();
     let sales = [];
@@ -170,7 +242,9 @@ window.posAPI = {
     try {
       const res = await fetch(`${CLOUD_API}/sales`, { headers: getHeaders() });
       if (res.ok) sales = await res.json();
-    } catch (e) { console.error("Could not fetch sales history"); }
+    } catch (e) {
+      sales = JSON.parse(localStorage.getItem('drix_pending_sales') || '[]');
+    }
 
     const now = new Date();
     const todayString = now.toDateString();
@@ -181,7 +255,7 @@ window.posAPI = {
     let turnover_month = 0, profit_month = 0;
 
     sales.forEach(sale => {
-      let saleDate = new Date(sale.created_at);
+      let saleDate = new Date(sale.created_at || sale.date || new Date());
       if (isNaN(saleDate.getTime())) saleDate = new Date();
 
       const isToday = saleDate.toDateString() === todayString;
@@ -217,13 +291,5 @@ window.posAPI = {
        salesStats: { turnover_today, profit_today, turnover_month, profit_month },
        stockValuation: { total_retail_value, total_invested }
     };
-  },
-
-  getSalesHistory: async () => {
-    try {
-      const res = await fetch(`${CLOUD_API}/sales`, { headers: getHeaders() });
-      if (res.ok) return await res.json();
-    } catch (e) {}
-    return [];
   }
 };
