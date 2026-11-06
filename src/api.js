@@ -1,40 +1,50 @@
 const CLOUD_API = 'https://glamyes-cloud-api.onrender.com/api';
-
-// UPDATED: Rebranded DRIX API Key to match backend
 const API_KEY = 'DRIX_SECRET_KEY_2026';
 
-const getHeaders = () => {
-  return {
-    'Content-Type': 'application/json',
-    'x-api-key': API_KEY,
-    'x-store-id': localStorage.getItem('drix_store_id') || 'DRIX_MASTER'
-  };
+const getHeaders = () => ({
+  'Content-Type': 'application/json',
+  'x-api-key': API_KEY,
+  'x-store-id': localStorage.getItem('drix_store_id') || 'DRIX_MASTER'
+});
+
+const notify = (msg, type = 'info') => {
+  if (window.drixNotify) window.drixNotify(msg, type);
 };
 
 window.posAPI = {
   // --- 1. HYBRID AUTHENTICATION ---
-  checkUsersExist: async () => true, 
+  checkUsersExist: async () => true,
   loginUser: async (data) => {
     try {
-      if (!navigator.onLine) throw new Error("Offline");
+      if (!navigator.onLine) throw new Error('Offline');
       const res = await fetch(`${CLOUD_API}/auth/web-login`, {
         method: 'POST',
         headers: getHeaders(),
         body: JSON.stringify(data)
       });
       const json = await res.json();
-      
       if (json.success) {
         localStorage.setItem('drix_offline_user', JSON.stringify({ ...data, ...json }));
       }
       return json;
     } catch (e) {
-      const cached = JSON.parse(localStorage.getItem('drix_offline_user'));
-      if (cached && cached.username === data.username && cached.password === data.password && cached.storeId === data.storeId) {
-        alert("⚠️ No Internet Connection. You have been logged in using Offline Mode.");
-        return { success: true, user: cached.user, storeName: cached.storeName, storeAddress: cached.storeAddress, mobile: cached.mobile };
+      const cached = JSON.parse(localStorage.getItem('drix_offline_user') || 'null');
+      if (
+        cached &&
+        cached.username === data.username &&
+        cached.password === data.password &&
+        cached.storeId === data.storeId
+      ) {
+        notify('Logged in via Offline Vault. Changes will queue locally.', 'warning');
+        return {
+          success: true,
+          user: cached.user,
+          storeName: cached.storeName,
+          storeAddress: cached.storeAddress,
+          mobile: cached.mobile
+        };
       }
-      return { success: false, error: 'Network Offline. No cached login found for these credentials.' };
+      return { success: false, error: 'Network offline and no cached credentials found.' };
     }
   },
 
@@ -43,25 +53,34 @@ window.posAPI = {
     try {
       const res = await fetch(`${CLOUD_API}/admin/stores`, { headers: getHeaders() });
       if (res.ok) return await res.json();
-    } catch (e) { return []; }
+    } catch (e) {}
+    return [];
   },
 
   createClientStore: async (storeData) => {
-    const res = await fetch(`${CLOUD_API}/admin/stores`, {
-      method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify(storeData)
-    });
-    return await res.json();
+    try {
+      const res = await fetch(`${CLOUD_API}/admin/stores`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify(storeData)
+      });
+      return await res.json();
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
   },
 
   toggleStoreSubscription: async (storeId, newStatus) => {
-    const res = await fetch(`${CLOUD_API}/admin/stores/${storeId}/toggle`, {
-      method: 'PUT',
-      headers: getHeaders(),
-      body: JSON.stringify({ status: newStatus })
-    });
-    return await res.json();
+    try {
+      const res = await fetch(`${CLOUD_API}/admin/stores/${storeId}/toggle`, {
+        method: 'PUT',
+        headers: getHeaders(),
+        body: JSON.stringify({ status: newStatus })
+      });
+      return await res.json();
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
   },
 
   updateStoreProfile: async (profileData) => {
@@ -99,67 +118,111 @@ window.posAPI = {
     }
   },
 
-  // --- 2. HYBRID INVENTORY ---
+  // --- 2. HYBRID INVENTORY (UNIFIED TRUTH ENGINE) ---
   getProducts: async () => {
+    let products = [];
     try {
-      if (!navigator.onLine) throw new Error("Offline");
+      if (!navigator.onLine) throw new Error('Offline');
       const res = await fetch(`${CLOUD_API}/products`, { headers: getHeaders() });
-      if (!res.ok) throw new Error("Fetch failed");
-      const products = await res.json();
-      
-      localStorage.setItem('drix_offline_products', JSON.stringify(products));
-      return products;
+      if (!res.ok) throw new Error('Fetch failed');
+      products = await res.json();
+      localStorage.setItem('drix_offline_products_base', JSON.stringify(products));
     } catch (e) {
-      return JSON.parse(localStorage.getItem('drix_offline_products') || '[]');
+      products = JSON.parse(localStorage.getItem('drix_offline_products_base') || localStorage.getItem('drix_offline_products') || '[]');
     }
+
+    // Reconcile any unsynced offline bills against cloud stock so stock is always accurate
+    const pendingQueue = JSON.parse(localStorage.getItem('drix_pending_sales') || '[]');
+    const reconciled = products.map((prod) => ({ ...prod }));
+
+    if (pendingQueue.length > 0) {
+      pendingQueue.forEach((invoice) => {
+        (invoice.items || []).forEach((item) => {
+          const target = reconciled.find((p) => String(p.barcode) === String(item.barcode));
+          if (target) {
+            const delta = invoice.type === 'RETURN' ? Number(item.qty || 0) : -Number(item.qty || 0);
+            target.stock_quantity = Math.max(0, Number(target.stock_quantity || 0) + delta);
+          }
+        });
+      });
+    }
+
+    localStorage.setItem('drix_offline_products', JSON.stringify(reconciled));
+    return reconciled;
   },
-  
+
   getProductByBarcode: async (barcode) => {
+    const clean = String(barcode || '').trim();
     const products = await window.posAPI.getProducts();
-    return products.find(p => p.barcode === barcode) || null;
+    return products.find((p) => String(p.barcode).trim() === clean) || null;
   },
 
   addProduct: async (product) => {
-    const res = await fetch(`${CLOUD_API}/products`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(product) });
-    return await res.json();
+    try {
+      const res = await fetch(`${CLOUD_API}/products`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify(product)
+      });
+      return await res.json();
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
   },
 
-  updateProduct: async (id, data) => {
-    const res = await fetch(`${CLOUD_API}/products/${data.barcode}`, { method: 'PUT', headers: getHeaders(), body: JSON.stringify(data) });
-    return await res.json();
+  updateProduct: async (targetBarcode, data) => {
+    try {
+      const lookupCode = targetBarcode || data.barcode;
+      const res = await fetch(`${CLOUD_API}/products/${encodeURIComponent(lookupCode)}`, {
+        method: 'PUT',
+        headers: getHeaders(),
+        body: JSON.stringify(data)
+      });
+      return await res.json();
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
   },
 
   deleteProduct: async (barcode) => {
-    const res = await fetch(`${CLOUD_API}/products/${barcode}`, { method: 'DELETE', headers: getHeaders() });
-    return await res.json();
+    try {
+      const res = await fetch(`${CLOUD_API}/products/${encodeURIComponent(barcode)}`, {
+        method: 'DELETE',
+        headers: getHeaders()
+      });
+      return await res.json();
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
   },
 
-  // --- 3. HYBRID CHECKOUT (OFFLINE QUEUE) ---
+  // --- 3. HYBRID CHECKOUT & RETURN (OFFLINE QUEUE) ---
   checkout: async (invoiceData) => {
     try {
-      if (!navigator.onLine) throw new Error("Offline");
-      const res = await fetch(`${CLOUD_API}/checkout`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(invoiceData) });
+      if (!navigator.onLine) throw new Error('Offline');
+      const res = await fetch(`${CLOUD_API}/checkout`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify(invoiceData)
+      });
+      if (!res.ok) throw new Error('Cloud checkout error');
       return await res.json();
     } catch (e) {
       const pendingQueue = JSON.parse(localStorage.getItem('drix_pending_sales') || '[]');
-      invoiceData.isOffline = true;
-      pendingQueue.push(invoiceData);
+      const offlineInvoice = {
+        ...invoiceData,
+        created_at: new Date().toISOString(),
+        isOffline: true
+      };
+      pendingQueue.push(offlineInvoice);
       localStorage.setItem('drix_pending_sales', JSON.stringify(pendingQueue));
-
-      const cachedProducts = JSON.parse(localStorage.getItem('drix_offline_products') || '[]');
-      invoiceData.items.forEach(item => {
-         const p = cachedProducts.find(prod => prod.barcode === item.barcode);
-         if (p) p.stock_quantity -= (invoiceData.type === 'RETURN' ? -item.qty : item.qty);
-      });
-      localStorage.setItem('drix_offline_products', JSON.stringify(cachedProducts));
-
-      return { success: true, invoice: invoiceData, offlineSaved: true };
+      window.dispatchEvent(new Event('drix-queue-updated'));
+      return { success: true, invoice: offlineInvoice, offlineSaved: true };
     }
   },
 
   processReturn: async (returnData) => {
-    const res = await fetch(`${CLOUD_API}/checkout`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(returnData) });
-    return await res.json();
+    return await window.posAPI.checkout({ ...returnData, type: 'RETURN' });
   },
 
   // --- 4. THE SYNC ENGINE ---
@@ -169,32 +232,35 @@ window.posAPI = {
   },
 
   syncPendingSales: async () => {
-    if (!navigator.onLine) return { success: false, error: "Still offline." };
+    if (!navigator.onLine) return { success: false, error: 'Still offline.' };
     const pending = JSON.parse(localStorage.getItem('drix_pending_sales') || '[]');
-    if (pending.length === 0) return { success: true, count: 0 };
+    if (pending.length === 0) return { success: true, count: 0, remaining: 0 };
 
     let successCount = 0;
-    let failedQueue = [];
+    const failedQueue = [];
 
     for (const invoice of pending) {
       try {
-        const res = await fetch(`${CLOUD_API}/checkout`, { method: 'POST', headers: getHeaders(), body: JSON.stringify(invoice) });
+        const res = await fetch(`${CLOUD_API}/checkout`, {
+          method: 'POST',
+          headers: getHeaders(),
+          body: JSON.stringify(invoice)
+        });
         if (res.ok) successCount++;
         else failedQueue.push(invoice);
       } catch (e) {
         failedQueue.push(invoice);
       }
     }
-    
+
     localStorage.setItem('drix_pending_sales', JSON.stringify(failedQueue));
+    window.dispatchEvent(new Event('drix-queue-updated'));
     return { success: failedQueue.length === 0, count: successCount, remaining: failedQueue.length };
   },
 
-  // --- WEB-NATIVE UTILITIES ---
-  getSettings: async () => {
-    return JSON.parse(localStorage.getItem('drix_settings') || '{}');
-  },
-  
+  // --- UTILITIES & PRINTING ---
+  getSettings: async () => JSON.parse(localStorage.getItem('drix_settings') || '{}'),
+
   updateSetting: async (key, value) => {
     const settings = JSON.parse(localStorage.getItem('drix_settings') || '{}');
     settings[key] = value;
@@ -204,47 +270,65 @@ window.posAPI = {
 
   saveImage: async (fileBlob) => {
     return new Promise((resolve, reject) => {
+      if (!fileBlob) return resolve(null);
+      if (typeof fileBlob === 'string') return resolve(fileBlob);
       const reader = new FileReader();
       reader.onloadend = () => resolve(reader.result);
-      reader.onerror = reject;
+      reader.onerror = () => resolve(null);
       if (fileBlob instanceof Blob) reader.readAsDataURL(fileBlob);
-      else resolve(fileBlob); 
+      else resolve(null);
     });
   },
 
-  getPrinters: async () => {
-    return [{ name: "Native Browser Print Engine", displayName: "System Default Printer" }];
+  getPrinters: async () => [
+    { name: 'Native Browser Print Engine', displayName: 'System Default Thermal / Label Printer' }
+  ],
+
+  printReceipt: async () => {
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        window.print();
+        resolve({ success: true });
+      }, 250);
+    });
   },
 
-  printReceipt: async (data) => {
-    setTimeout(() => window.print(), 500);
-    return { success: true };
+  printBarcodeLabel: async () => {
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        window.print();
+        resolve({ success: true });
+      }, 250);
+    });
   },
 
-  printBarcodeLabel: async (data) => {
-    setTimeout(() => window.print(), 500);
-    return { success: true };
+  exitApp: () => {
+    if (window.drixUpdater && window.drixUpdater.exitApp) {
+      window.drixUpdater.exitApp();
+    } else {
+      window.location.reload();
+    }
   },
 
   getSalesHistory: async () => {
+    let cloudSales = [];
     try {
+      if (!navigator.onLine) throw new Error('Offline');
       const res = await fetch(`${CLOUD_API}/sales`, { headers: getHeaders() });
-      if (res.ok) return await res.json();
-    } catch (e) {}
-    return [];
+      if (res.ok) {
+        cloudSales = await res.json();
+        localStorage.setItem('drix_offline_sales_history', JSON.stringify(cloudSales));
+      }
+    } catch (e) {
+      cloudSales = JSON.parse(localStorage.getItem('drix_offline_sales_history') || '[]');
+    }
+    const pendingQueue = JSON.parse(localStorage.getItem('drix_pending_sales') || '[]');
+    return [...pendingQueue.slice().reverse(), ...cloudSales];
   },
 
-  // --- HYBRID DASHBOARD STATS ---
   getDashboardStats: async () => {
     const products = await window.posAPI.getProducts();
-    let sales = [];
-    
-    try {
-      const res = await fetch(`${CLOUD_API}/sales`, { headers: getHeaders() });
-      if (res.ok) sales = await res.json();
-    } catch (e) {
-      sales = JSON.parse(localStorage.getItem('drix_pending_sales') || '[]');
-    }
+    const sales = await window.posAPI.getSalesHistory();
 
     const now = new Date();
     const todayString = now.toDateString();
@@ -254,7 +338,7 @@ window.posAPI = {
     let turnover_today = 0, profit_today = 0;
     let turnover_month = 0, profit_month = 0;
 
-    sales.forEach(sale => {
+    sales.forEach((sale) => {
       let saleDate = new Date(sale.created_at || sale.date || new Date());
       if (isNaN(saleDate.getTime())) saleDate = new Date();
 
@@ -263,33 +347,39 @@ window.posAPI = {
 
       let totalCost = 0;
       const items = Array.isArray(sale.items) ? sale.items : [];
-      
-      items.forEach(item => {
-         const p = products.find(prod => prod.barcode === item.barcode);
-         const cost = p ? (p.cost_price || 0) : (item.price || 0); 
-         totalCost += (cost * (item.qty || 0));
+
+      items.forEach((item) => {
+        const p = products.find((prod) => String(prod.barcode) === String(item.barcode));
+        const cost = item.cost_price !== undefined ? Number(item.cost_price) : p ? Number(p.cost_price || 0) : 0;
+        totalCost += cost * Number(item.qty || 0);
       });
 
-      const safeTotalAmount = sale.total_amount || 0;
+      const safeTotalAmount = Number(sale.total_amount || 0);
       const revenue = sale.type === 'RETURN' ? -safeTotalAmount : safeTotalAmount;
-      const profit = sale.type === 'RETURN' ? -(safeTotalAmount - totalCost) : (safeTotalAmount - totalCost);
+      const profit = sale.type === 'RETURN' ? -(safeTotalAmount - totalCost) : safeTotalAmount - totalCost;
 
-      if (isToday) { turnover_today += revenue; profit_today += profit; }
-      if (isThisMonth) { turnover_month += revenue; profit_month += profit; }
+      if (isToday) {
+        turnover_today += revenue;
+        profit_today += profit;
+      }
+      if (isThisMonth) {
+        turnover_month += revenue;
+        profit_month += profit;
+      }
     });
 
     let total_retail_value = 0, total_invested = 0;
-    products.forEach(p => {
-       const qty = p.stock_quantity || 0;
-       if (qty > 0) {
-           total_retail_value += ((p.price || 0) * qty);
-           total_invested += ((p.cost_price || 0) * qty);
-       }
+    products.forEach((p) => {
+      const qty = Number(p.stock_quantity || 0);
+      if (qty > 0) {
+        total_retail_value += Number(p.price || 0) * qty;
+        total_invested += Number(p.cost_price || 0) * qty;
+      }
     });
 
     return {
-       salesStats: { turnover_today, profit_today, turnover_month, profit_month },
-       stockValuation: { total_retail_value, total_invested }
+      salesStats: { turnover_today, profit_today, turnover_month, profit_month },
+      stockValuation: { total_retail_value, total_invested }
     };
   }
 };

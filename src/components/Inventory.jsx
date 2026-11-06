@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import JsBarcode from 'jsbarcode';
 
-// Helper to block negative keypresses
 const blockInvalidChars = (e) => {
   if (['e', 'E', '+', '-'].includes(e.key)) {
     e.preventDefault();
@@ -10,71 +9,43 @@ const blockInvalidChars = (e) => {
 
 export default function Inventory({ theme }) {
   const [products, setProducts] = useState([]);
-  const [previewUrl, setPreviewUrl] = useState(null); 
-  
+  const [searchQuery, setSearchQuery] = useState('');
+  const [previewUrl, setPreviewUrl] = useState(null);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
+
   const [editProduct, setEditProduct] = useState(null);
   const [barcodePreview, setBarcodePreview] = useState(null);
   const [printCopies, setPrintCopies] = useState(1);
   const barcodeRef = useRef(null);
 
-  // Dynamic Categories State
-  const [savedCategories, setSavedCategories] = useState(['Kurti', 'Top', 'Jeans', 'Dress', 'Saree', 'Accessories']);
+  const [savedCategories, setSavedCategories] = useState([
+    'Kurti', 'Top', 'Jeans', 'Dress', 'Saree', 'Jewellery', 'Accessories'
+  ]);
 
-  // Base Form Data
   const [formData, setFormData] = useState({
-    name: '', 
-    category: 'Kurti', 
-    color: '', 
-    cost_price: '', 
-    price: '', 
-    raw_file_path: '' 
+    name: '',
+    category: 'Kurti',
+    color: '',
+    cost_price: '',
+    price: ''
   });
 
-  // Variant Architecture
-  const [variants, setVariants] = useState([{ 
-    size: 'M', 
-    quantity: '', 
-    barcode: Math.floor(1000 + Math.random() * 9000).toString() 
-  }]);
+  const [variants, setVariants] = useState([
+    {
+      size: 'M',
+      quantity: '',
+      barcode: Math.floor(1000 + Math.random() * 9000).toString()
+    }
+  ]);
 
-  const isDark = theme === 'dark';
-  const colors = {
-    text: isDark ? '#ffffff' : '#1c1c1e',
-    textMuted: isDark ? '#a1a1a6' : '#86868b',
-    glassBg: isDark ? 'rgba(30, 30, 30, 0.4)' : 'rgba(255, 255, 255, 0.5)',
-    glassBorder: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(255, 255, 255, 0.5)',
-    inputBg: isDark ? 'rgba(0, 0, 0, 0.3)' : 'rgba(255, 255, 255, 0.7)',
-    accentBlue: '#007aff',
-    accentRed: '#ff3b30',
-    accentOrange: '#ff9500',
-    accentGreen: '#34c759'
-  };
-
-  const glassStyle = {
-    background: colors.glassBg,
-    backdropFilter: 'blur(20px)',
-    WebkitBackdropFilter: 'blur(20px)',
-    border: `1px solid ${colors.glassBorder}`,
-    borderRadius: '16px',
-    boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.1)',
-    color: colors.text
-  };
-
-  const inputStyle = {
-    padding: '12px',
-    background: colors.inputBg,
-    border: `1px solid ${colors.glassBorder}`,
-    borderRadius: '12px',
-    color: colors.text,
-    outline: 'none',
-    fontSize: '1rem',
-    width: '100%',
-    boxSizing: 'border-box'
+  const notify = (msg, type = 'info') => {
+    if (window.drixNotify) window.drixNotify(msg, type);
   };
 
   const loadProductsAndSettings = async () => {
     const data = await window.posAPI.getProducts();
-    setProducts(data);
+    setProducts(Array.isArray(data) ? data : []);
 
     const settings = await window.posAPI.getSettings();
     if (settings.savedCategories && settings.savedCategories.length > 0) {
@@ -82,19 +53,19 @@ export default function Inventory({ theme }) {
     }
   };
 
-  useEffect(() => { 
-    loadProductsAndSettings(); 
+  useEffect(() => {
+    loadProductsAndSettings();
   }, []);
 
   useEffect(() => {
     if (barcodePreview && barcodeRef.current) {
-      JsBarcode(barcodeRef.current, barcodePreview.barcode, { 
-        format: "CODE128", 
-        width: 1.5, 
-        height: 40, 
-        displayValue: true, 
-        fontSize: 12, 
-        margin: 0 
+      JsBarcode(barcodeRef.current, barcodePreview.barcode, {
+        format: 'CODE128',
+        width: 1.5,
+        height: 40,
+        displayValue: true,
+        fontSize: 12,
+        margin: 0
       });
     }
   }, [barcodePreview]);
@@ -103,10 +74,11 @@ export default function Inventory({ theme }) {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
 
+  // FIXED: Passes actual File object to Base64 converter so images work on both Web & Electron
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
-      setFormData({ ...formData, raw_file_path: file.path });
+      setSelectedFile(file);
       setPreviewUrl(URL.createObjectURL(file));
     }
   };
@@ -114,36 +86,38 @@ export default function Inventory({ theme }) {
   const handleSaveCategory = async () => {
     const newCat = formData.category.trim();
     if (!newCat) return;
-    
+
     if (!savedCategories.includes(newCat)) {
       const updatedCategories = [...savedCategories, newCat];
       setSavedCategories(updatedCategories);
       await window.posAPI.updateSetting('savedCategories', updatedCategories);
-      alert(`"${newCat}" has been permanently saved to your category list!`);
+      notify(`"${newCat}" saved to your category list!`, 'success');
     } else {
-      alert(`"${newCat}" is already in your category list.`);
+      notify(`"${newCat}" is already in your category list.`, 'info');
     }
   };
 
   const addVariantRow = () => {
-    setVariants([...variants, { 
-      size: 'L', 
-      quantity: '', 
-      barcode: Math.floor(1000 + Math.random() * 9000).toString() 
-    }]);
+    setVariants([
+      ...variants,
+      {
+        size: 'L',
+        quantity: '',
+        barcode: Math.floor(1000 + Math.random() * 9000).toString()
+      }
+    ]);
   };
-  
+
   const updateVariant = (index, field, value) => {
     const newVars = [...variants];
     newVars[index][field] = value;
     setVariants(newVars);
   };
-  
+
   const removeVariantRow = (index) => {
-    const newVars = variants.filter((_, i) => i !== index);
-    setVariants(newVars);
+    setVariants(variants.filter((_, i) => i !== index));
   };
-  
+
   const generateVariantBarcode = (index) => {
     const newVars = [...variants];
     newVars[index].barcode = Math.floor(1000 + Math.random() * 9000).toString();
@@ -152,128 +126,187 @@ export default function Inventory({ theme }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (isSaving) return;
+    setIsSaving(true);
+
     try {
       let savedImagePath = null;
-      if (formData.raw_file_path) {
-        savedImagePath = await window.posAPI.saveImage(formData.raw_file_path);
+      if (selectedFile) {
+        savedImagePath = await window.posAPI.saveImage(selectedFile);
       }
-      
+
       let itemsAdded = 0;
       for (const variant of variants) {
-        if (variant.quantity && variant.barcode) {
-          await window.posAPI.addProduct({
-            name: formData.name,
-            category: formData.category,
-            color: formData.color,
-            cost_price: Math.max(0, parseFloat(formData.cost_price)),
-            price: Math.max(0, parseFloat(formData.price)),
+        if (variant.quantity !== '' && variant.barcode) {
+          const res = await window.posAPI.addProduct({
+            name: formData.name.trim(),
+            category: formData.category.trim(),
+            color: formData.color.trim(),
+            cost_price: Math.max(0, parseFloat(formData.cost_price || 0)),
+            price: Math.max(0, parseFloat(formData.price || 0)),
             image_path: savedImagePath,
-            size: variant.size,
-            stock_quantity: Math.max(0, parseInt(variant.quantity)),
-            barcode: variant.barcode
+            size: variant.size.trim(),
+            stock_quantity: Math.max(0, parseInt(variant.quantity, 10)),
+            barcode: String(variant.barcode).trim()
           });
-          itemsAdded++;
+          if (res && res.success !== false) itemsAdded++;
         }
       }
 
       if (itemsAdded > 0) {
-        alert(`${itemsAdded} variants added successfully!`);
-        setFormData({ 
-          name: '', 
-          category: formData.category, 
-          color: '', 
-          cost_price: '', 
-          price: '', 
-          raw_file_path: '' 
+        notify(`${itemsAdded} product variant(s) saved to inventory!`, 'success');
+        setFormData({
+          name: '',
+          category: formData.category,
+          color: '',
+          cost_price: '',
+          price: ''
         });
-        setVariants([{ 
-          size: 'M', 
-          quantity: '', 
-          barcode: Math.floor(1000 + Math.random() * 9000).toString() 
-        }]);
+        setVariants([
+          {
+            size: 'M',
+            quantity: '',
+            barcode: Math.floor(1000 + Math.random() * 9000).toString()
+          }
+        ]);
         setPreviewUrl(null);
-        loadProductsAndSettings();
+        setSelectedFile(null);
+        await loadProductsAndSettings();
       } else {
-        alert("Please provide stock quantity and barcodes for at least one variant.");
+        notify('Could not add product. Check that barcodes are unique.', 'error');
       }
     } catch (error) {
-      alert('Error adding product. Ensure barcodes are unique.');
+      notify('Error adding product. Ensure barcodes are unique.', 'error');
+    } finally {
+      setIsSaving(false);
     }
+  };
+
+  const openEditModal = (product) => {
+    setEditProduct({
+      ...product,
+      originalBarcode: product.barcode
+    });
   };
 
   const submitEdit = async (e) => {
     e.preventDefault();
-    await window.posAPI.updateProduct(editProduct.id, {
-      name: editProduct.name, 
-      category: editProduct.category, 
-      size: editProduct.size, 
+    const res = await window.posAPI.updateProduct(editProduct.originalBarcode || editProduct.barcode, {
+      name: editProduct.name,
+      category: editProduct.category,
+      size: editProduct.size,
       color: editProduct.color,
-      cost_price: Math.max(0, parseFloat(editProduct.cost_price)), 
-      price: Math.max(0, parseFloat(editProduct.price)),
-      stock_quantity: Math.max(0, parseInt(editProduct.stock_quantity)),
-      barcode: editProduct.barcode
+      cost_price: Math.max(0, parseFloat(editProduct.cost_price || 0)),
+      price: Math.max(0, parseFloat(editProduct.price || 0)),
+      stock_quantity: Math.max(0, parseInt(editProduct.stock_quantity || 0, 10)),
+      barcode: String(editProduct.barcode).trim()
     });
-    alert('Item Updated!');
-    setEditProduct(null);
-    loadProductsAndSettings();
+
+    if (res && res.success !== false) {
+      notify('Product updated successfully!', 'success');
+      setEditProduct(null);
+      loadProductsAndSettings();
+    } else {
+      notify(res?.error || 'Failed to update product.', 'error');
+    }
   };
 
-  // SECURE DELETE HANDLER (NOW USES BARCODE INSTEAD OF ID)
-  const handleDelete = async (barcode) => {
-    if (window.confirm("Are you sure you want to permanently delete this product?")) {
-      await window.posAPI.deleteProduct(barcode);
-      loadProductsAndSettings();
+  const handleDelete = (barcode, name) => {
+    if (window.drixConfirm) {
+      window.drixConfirm(
+        `Are you sure you want to permanently delete "${name}" (#${barcode})?`,
+        async () => {
+          await window.posAPI.deleteProduct(barcode);
+          notify(`Deleted "${name}" from inventory.`, 'info');
+          loadProductsAndSettings();
+        },
+        'Delete Inventory Item'
+      );
     }
   };
 
   const handleActualPrint = async () => {
-    const qtyToPrint = parseInt(printCopies) || 1;
     const result = await window.posAPI.printBarcodeLabel({
-      name: barcodePreview.name, 
-      size: barcodePreview.size, 
-      price: barcodePreview.price, 
-      barcode: barcodePreview.barcode, 
-      copies: qtyToPrint
+      ...barcodePreview,
+      copies: parseInt(printCopies, 10) || 1
     });
     if (result.success) {
       setBarcodePreview(null);
       setPrintCopies(1);
     } else {
-      alert("Print failed. Check printer connection.");
+      notify('Print failed. Check printer connection.', 'error');
     }
   };
 
+  const filteredProducts = products.filter((p) => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      String(p.barcode || '').toLowerCase().includes(q) ||
+      String(p.name || '').toLowerCase().includes(q) ||
+      String(p.category || '').toLowerCase().includes(q) ||
+      String(p.color || '').toLowerCase().includes(q)
+    );
+  });
+
+  const isDark = theme === 'dark';
+  const colors = {
+    text: isDark ? '#f8fafc' : '#0f172a',
+    textMuted: isDark ? '#94a3b8' : '#64748b',
+    glassBg: isDark ? 'rgba(22, 30, 46, 0.65)' : 'rgba(255, 255, 255, 0.85)',
+    glassBorder: isDark ? 'rgba(255, 255, 255, 0.09)' : 'rgba(15, 23, 42, 0.1)',
+    inputBg: isDark ? 'rgba(9, 13, 22, 0.6)' : 'rgba(255, 255, 255, 0.95)',
+    accentBlue: '#3b82f6',
+    accentRed: '#ef4444',
+    accentOrange: '#f59e0b',
+    accentGreen: '#10b981'
+  };
+
+  const glassStyle = {
+    background: colors.glassBg,
+    backdropFilter: 'blur(20px)',
+    border: `1px solid ${colors.glassBorder}`,
+    borderRadius: '18px',
+    boxShadow: '0 10px 30px rgba(0, 0, 0, 0.12)',
+    color: colors.text
+  };
+
+  const inputStyle = {
+    padding: '11px 14px',
+    background: colors.inputBg,
+    border: `1px solid ${colors.glassBorder}`,
+    borderRadius: '12px',
+    color: colors.text,
+    outline: 'none',
+    fontSize: '0.95rem',
+    width: '100%',
+    boxSizing: 'border-box'
+  };
+
   return (
-    <div style={{ padding: '30px', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif', boxSizing: 'border-box' }}>
-      <h2 style={{ color: colors.text, marginTop: 0 }}>📦 Inventory & Stock Management</h2>
-      
+    <div style={{ padding: '26px', boxSizing: 'border-box' }}>
       {/* ---------------- BULK ADD ITEM FORM ---------------- */}
-      <div style={{ ...glassStyle, padding: '30px', marginBottom: '30px' }}>
-        <h3 style={{ marginTop: 0 }}>Add New Product (Bulk Variants)</h3>
-        <form onSubmit={handleSubmit} style={{ display: 'grid', gridTemplateColumns: '1fr 200px', gap: '20px' }}>
-          
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
+      <div style={{ ...glassStyle, padding: '26px', marginBottom: '26px' }}>
+        <h3 style={{ marginTop: 0, marginBottom: '18px', fontSize: '1.25rem', fontWeight: '800' }}>
+          ➕ Add New Product (Multi-Variant Generator)
+        </h3>
+        <form onSubmit={handleSubmit} style={{ display: 'grid', gridTemplateColumns: '1fr 200px', gap: '22px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
             <div>
-              <label style={{ display: 'block', marginBottom: '5px', color: colors.textMuted }}>Item Name:</label>
-              <input type="text" name="name" value={formData.name} onChange={handleChange} required style={inputStyle} />
+              <label style={{ display: 'block', marginBottom: '5px', color: colors.textMuted, fontSize: '0.82rem', fontWeight: '600' }}>ITEM NAME</label>
+              <input type="text" name="name" placeholder="e.g. Designer Silk Kurti" value={formData.name} onChange={handleChange} required style={inputStyle} />
             </div>
-            
+
             <div>
-              <label style={{ display: 'block', marginBottom: '5px', color: colors.textMuted }}>Category (Type or Select):</label>
+              <label style={{ display: 'block', marginBottom: '5px', color: colors.textMuted, fontSize: '0.82rem', fontWeight: '600' }}>CATEGORY</label>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <input 
-                  list="categories" 
-                  name="category" 
-                  value={formData.category} 
-                  onChange={handleChange} 
-                  required 
-                  style={{ ...inputStyle, flex: 1 }} 
-                />
-                <button 
-                  type="button" 
+                <input list="categories" name="category" value={formData.category} onChange={handleChange} required style={{ ...inputStyle, flex: 1 }} />
+                <button
+                  type="button"
+                  className="drix-btn"
                   onClick={handleSaveCategory}
-                  title="Save this category permanently"
-                  style={{ padding: '0 12px', background: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)', color: colors.text, border: `1px solid ${colors.glassBorder}`, borderRadius: '12px', cursor: 'pointer', fontWeight: 'bold' }}
+                  title="Save category to list"
+                  style={{ padding: '0 14px', background: colors.inputBg, color: colors.text, border: `1px solid ${colors.glassBorder}`, borderRadius: '12px', cursor: 'pointer', fontWeight: '700' }}
                 >
                   💾
                 </button>
@@ -284,111 +317,136 @@ export default function Inventory({ theme }) {
                 ))}
               </datalist>
             </div>
-            
+
             <div>
-              <label style={{ display: 'block', marginBottom: '5px', color: colors.textMuted }}>Base Color:</label>
-              <input type="text" name="color" value={formData.color} onChange={handleChange} required style={inputStyle} />
+              <label style={{ display: 'block', marginBottom: '5px', color: colors.textMuted, fontSize: '0.82rem', fontWeight: '600' }}>COLOR / VARIANT</label>
+              <input type="text" name="color" placeholder="e.g. Emerald Green" value={formData.color} onChange={handleChange} required style={inputStyle} />
             </div>
-            
-            <div style={{ display: 'flex', gap: '15px' }}>
+
+            <div style={{ display: 'flex', gap: '12px' }}>
               <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', marginBottom: '5px', color: colors.textMuted }}>Cost Price (₹):</label>
+                <label style={{ display: 'block', marginBottom: '5px', color: colors.textMuted, fontSize: '0.82rem', fontWeight: '600' }}>COST PRICE (₹)</label>
                 <input type="number" name="cost_price" value={formData.cost_price} onChange={handleChange} onKeyDown={blockInvalidChars} min="0" step="0.01" required style={inputStyle} />
               </div>
               <div style={{ flex: 1 }}>
-                <label style={{ display: 'block', marginBottom: '5px', color: colors.textMuted }}>Selling Price (₹):</label>
+                <label style={{ display: 'block', marginBottom: '5px', color: colors.textMuted, fontSize: '0.82rem', fontWeight: '600' }}>SELLING MRP (₹)</label>
                 <input type="number" name="price" value={formData.price} onChange={handleChange} onKeyDown={blockInvalidChars} min="0" step="0.01" required style={inputStyle} />
               </div>
             </div>
 
             {/* VARIANT GENERATOR TABLE */}
-            <div style={{ gridColumn: 'span 2', background: isDark ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.3)', padding: '20px', borderRadius: '16px', border: `1px solid ${colors.glassBorder}` }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                <h4 style={{ margin: 0, color: colors.text }}>Sizes & Quantities</h4>
-                <button 
-                  type="button" 
-                  onClick={addVariantRow} 
-                  style={{ padding: '8px 16px', background: 'rgba(0, 122, 255, 0.1)', color: colors.accentBlue, border: `1px solid rgba(0, 122, 255, 0.3)`, borderRadius: '10px', cursor: 'pointer', fontWeight: 'bold' }}
+            <div style={{ gridColumn: 'span 2', background: isDark ? 'rgba(0,0,0,0.22)' : 'rgba(255,255,255,0.45)', padding: '18px', borderRadius: '14px', border: `1px solid ${colors.glassBorder}` }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <h4 style={{ margin: 0, color: colors.text, fontSize: '0.95rem' }}>Sizes, Stock & Barcodes</h4>
+                <button
+                  type="button"
+                  className="drix-btn"
+                  onClick={addVariantRow}
+                  style={{ padding: '7px 14px', background: 'rgba(59, 130, 246, 0.15)', color: colors.accentBlue, border: `1px solid rgba(59, 130, 246, 0.35)`, borderRadius: '10px', cursor: 'pointer', fontWeight: '700', fontSize: '0.84rem' }}
                 >
                   + Add Size Variant
                 </button>
               </div>
-              
+
               {variants.map((variant, index) => (
                 <div key={index} style={{ display: 'flex', gap: '10px', marginBottom: '10px', alignItems: 'center' }}>
-                  <input type="text" placeholder="Size (e.g. M)" value={variant.size} onChange={(e) => updateVariant(index, 'size', e.target.value)} required style={{ ...inputStyle, flex: 1 }} />
-                  <input type="number" placeholder="Qty" value={variant.quantity} onChange={(e) => updateVariant(index, 'quantity', e.target.value)} onKeyDown={blockInvalidChars} min="0" required style={{ ...inputStyle, flex: 1 }} />
-                  <div style={{ display: 'flex', flex: 2, gap: '5px' }}>
-                    <input type="text" placeholder="4-Digit Code" value={variant.barcode} onChange={(e) => updateVariant(index, 'barcode', e.target.value)} required style={{ ...inputStyle, flex: 1 }} />
-                    <button type="button" onClick={() => generateVariantBarcode(index)} style={{ padding: '12px', background: colors.inputBg, border: `1px solid ${colors.glassBorder}`, borderRadius: '12px', cursor: 'pointer' }}>🎲</button>
+                  <input type="text" placeholder="Size (e.g. M, Free)" value={variant.size} onChange={(e) => updateVariant(index, 'size', e.target.value)} required style={{ ...inputStyle, flex: 1 }} />
+                  <input type="number" placeholder="Stock Qty" value={variant.quantity} onChange={(e) => updateVariant(index, 'quantity', e.target.value)} onKeyDown={blockInvalidChars} min="0" required style={{ ...inputStyle, flex: 1 }} />
+                  <div style={{ display: 'flex', flex: 2, gap: '6px' }}>
+                    <input type="text" placeholder="Barcode" value={variant.barcode} onChange={(e) => updateVariant(index, 'barcode', e.target.value)} required style={{ ...inputStyle, flex: 1, fontFamily: 'monospace' }} />
+                    <button type="button" className="drix-btn" onClick={() => generateVariantBarcode(index)} title="Generate random barcode" style={{ padding: '0 14px', background: colors.inputBg, border: `1px solid ${colors.glassBorder}`, borderRadius: '12px', cursor: 'pointer' }}>🎲</button>
                   </div>
                   {variants.length > 1 && (
-                    <button type="button" onClick={() => removeVariantRow(index)} style={{ padding: '12px 16px', background: 'rgba(255, 59, 48, 0.1)', color: colors.accentRed, border: 'none', borderRadius: '12px', cursor: 'pointer', fontWeight: 'bold' }}>✕</button>
+                    <button type="button" className="drix-btn" onClick={() => removeVariantRow(index)} style={{ padding: '10px 14px', background: 'rgba(239, 68, 68, 0.12)', color: colors.accentRed, border: 'none', borderRadius: '10px', cursor: 'pointer', fontWeight: '800' }}>✕</button>
                   )}
                 </div>
               ))}
             </div>
-            
-            <button type="submit" style={{ gridColumn: 'span 2', padding: '16px', background: colors.accentBlue, color: 'white', border: 'none', borderRadius: '14px', cursor: 'pointer', fontWeight: 'bold', fontSize: '1.05rem', boxShadow: '0 4px 15px rgba(0, 122, 255, 0.3)' }}>
-              Save All Variants to Inventory
+
+            <button
+              type="submit"
+              disabled={isSaving}
+              className="drix-btn"
+              style={{ gridColumn: 'span 2', padding: '14px', background: 'linear-gradient(135deg, #3b82f6, #2563eb)', color: 'white', border: 'none', borderRadius: '12px', cursor: isSaving ? 'wait' : 'pointer', fontWeight: '800', fontSize: '1rem', boxShadow: '0 6px 20px rgba(59, 130, 246, 0.3)' }}
+            >
+              {isSaving ? 'Saving Variants...' : 'Save All Variants to Inventory'}
             </button>
           </div>
 
-          <div style={{ border: `2px dashed ${colors.glassBorder}`, background: isDark ? 'rgba(0,0,0,0.1)' : 'transparent', padding: '20px', borderRadius: '20px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-            <label style={{ display: 'block', marginBottom: '15px', fontWeight: 'bold', color: colors.textMuted }}>Product Image</label>
+          <div style={{ border: `2px dashed ${colors.glassBorder}`, padding: '18px', borderRadius: '16px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+            <label style={{ display: 'block', marginBottom: '12px', fontWeight: '700', color: colors.textMuted, fontSize: '0.84rem' }}>PRODUCT PHOTO</label>
             {previewUrl ? (
-              <img src={previewUrl} alt="Preview" style={{ width: '130px', height: '130px', objectFit: 'cover', borderRadius: '16px', marginBottom: '15px', boxShadow: '0 4px 15px rgba(0,0,0,0.1)' }} />
+              <img src={previewUrl} alt="Preview" style={{ width: '130px', height: '130px', objectFit: 'cover', borderRadius: '14px', marginBottom: '12px' }} />
             ) : (
-              <div style={{ width: '130px', height: '130px', background: colors.inputBg, borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '15px', color: colors.textMuted }}>No Image</div>
+              <div style={{ width: '130px', height: '130px', background: colors.inputBg, borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '12px', color: colors.textMuted, fontSize: '0.82rem' }}>No Image</div>
             )}
-            <input type="file" accept="image/*" onChange={handleImageUpload} style={{ width: '100%', fontSize: '0.8rem', color: colors.textMuted }} />
+            <input type="file" accept="image/*" onChange={handleImageUpload} style={{ width: '100%', fontSize: '0.78rem', color: colors.textMuted }} />
           </div>
-
         </form>
       </div>
 
       {/* ---------------- STOCK OVERVIEW TABLE ---------------- */}
-      <div style={{ ...glassStyle, padding: '30px' }}>
-        <h3 style={{ marginTop: 0 }}>Current Stock Overview</h3>
+      <div style={{ ...glassStyle, padding: '26px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px', gap: '16px' }}>
+          <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: '800' }}>
+            Current Stock Overview ({filteredProducts.length})
+          </h3>
+          <input
+            type="text"
+            placeholder="🔍 Search by barcode, name, category, or color..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            style={{ ...inputStyle, maxWidth: '340px' }}
+          />
+        </div>
+
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
             <thead>
               <tr>
-                <th style={{ padding: '15px', borderBottom: `1px solid ${colors.glassBorder}`, color: colors.textMuted }}>Img</th>
-                <th style={{ padding: '15px', borderBottom: `1px solid ${colors.glassBorder}`, color: colors.textMuted }}>Code</th>
-                <th style={{ padding: '15px', borderBottom: `1px solid ${colors.glassBorder}`, color: colors.textMuted }}>Item</th>
-                <th style={{ padding: '15px', borderBottom: `1px solid ${colors.glassBorder}`, color: colors.textMuted }}>Variant</th>
-                <th style={{ padding: '15px', borderBottom: `1px solid ${colors.glassBorder}`, color: colors.textMuted }}>MRP</th>
-                <th style={{ padding: '15px', borderBottom: `1px solid ${colors.glassBorder}`, color: colors.textMuted }}>Stock</th>
-                <th style={{ padding: '15px', borderBottom: `1px solid ${colors.glassBorder}`, color: colors.textMuted }}>Actions</th> 
+                <th style={{ padding: '14px', borderBottom: `1px solid ${colors.glassBorder}`, color: colors.textMuted, fontSize: '0.8rem' }}>IMG</th>
+                <th style={{ padding: '14px', borderBottom: `1px solid ${colors.glassBorder}`, color: colors.textMuted, fontSize: '0.8rem' }}>BARCODE</th>
+                <th style={{ padding: '14px', borderBottom: `1px solid ${colors.glassBorder}`, color: colors.textMuted, fontSize: '0.8rem' }}>ITEM NAME</th>
+                <th style={{ padding: '14px', borderBottom: `1px solid ${colors.glassBorder}`, color: colors.textMuted, fontSize: '0.8rem' }}>VARIANT</th>
+                <th style={{ padding: '14px', borderBottom: `1px solid ${colors.glassBorder}`, color: colors.textMuted, fontSize: '0.8rem' }}>MRP</th>
+                <th style={{ padding: '14px', borderBottom: `1px solid ${colors.glassBorder}`, color: colors.textMuted, fontSize: '0.8rem' }}>STOCK</th>
+                <th style={{ padding: '14px', borderBottom: `1px solid ${colors.glassBorder}`, color: colors.textMuted, fontSize: '0.8rem', textAlign: 'right' }}>ACTIONS</th>
               </tr>
             </thead>
             <tbody>
-              {products.map((p) => (
-                <tr key={p.id} style={{ borderBottom: `1px solid ${colors.glassBorder}`, transition: 'background 0.2s' }}>
-                  <td style={{ padding: '10px' }}>
-                    {p.image_path ? <img src={p.image_path} alt="img" style={{ width: '45px', height: '45px', objectFit: 'cover', borderRadius: '8px' }} /> : '-'}
+              {filteredProducts.map((p) => (
+                <tr key={p._id || p.barcode} style={{ borderBottom: `1px solid ${colors.glassBorder}` }}>
+                  <td style={{ padding: '10px 14px' }}>
+                    {p.image_path ? (
+                      <img src={p.image_path} alt="img" style={{ width: '42px', height: '42px', objectFit: 'cover', borderRadius: '8px' }} />
+                    ) : (
+                      <div style={{ width: '42px', height: '42px', borderRadius: '8px', background: colors.inputBg, display: 'flex', alignItems: 'center', justifyContent: 'center', color: colors.textMuted, fontSize: '0.75rem' }}>—</div>
+                    )}
                   </td>
-                  <td style={{ padding: '15px', fontFamily: 'monospace', color: colors.text }}>{p.barcode}</td>
-                  <td style={{ padding: '15px', fontWeight: '500', color: colors.text }}>{p.name}</td>
-                  <td style={{ padding: '15px', color: colors.text }}>{p.size} / {p.color}</td>
-                  <td style={{ padding: '15px', color: colors.text, fontWeight: 'bold' }}>₹{p.price}</td>
-                  <td style={{ padding: '15px' }}>
-                    <span style={{ color: p.stock_quantity <= 3 ? colors.accentRed : colors.accentGreen, fontWeight: 'bold', padding: '4px 8px', background: p.stock_quantity <= 3 ? 'rgba(255, 59, 48, 0.1)' : 'rgba(52, 199, 89, 0.1)', borderRadius: '6px' }}>
+                  <td style={{ padding: '14px', fontFamily: 'monospace', fontWeight: '700', color: colors.accentBlue }}>{p.barcode}</td>
+                  <td style={{ padding: '14px', fontWeight: '600', color: colors.text }}>
+                    {p.name}
+                    <div style={{ fontSize: '0.75rem', color: colors.textMuted }}>{p.category}</div>
+                  </td>
+                  <td style={{ padding: '14px', color: colors.text }}>{p.size} / {p.color}</td>
+                  <td style={{ padding: '14px', color: colors.text, fontWeight: '700' }}>₹{p.price}</td>
+                  <td style={{ padding: '14px' }}>
+                    <span style={{ color: p.stock_quantity <= 3 ? colors.accentRed : colors.accentGreen, fontWeight: '800', padding: '4px 10px', background: p.stock_quantity <= 3 ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)', borderRadius: '99px', fontSize: '0.85rem' }}>
                       {p.stock_quantity}
                     </span>
                   </td>
-                  <td style={{ padding: '15px', display: 'flex', gap: '8px' }}>
-                    <button onClick={() => setEditProduct(p)} style={{ padding: '8px 14px', background: 'rgba(255, 149, 0, 0.15)', color: colors.accentOrange, border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>
-                      Edit
-                    </button>
-                    <button onClick={() => setBarcodePreview(p)} style={{ padding: '8px 14px', background: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)', color: colors.text, border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>
-                      Tags
-                    </button>
-                    {/* FIXED: Deletes specifically by Barcode to stop the React duplicate key bug */}
-                    <button onClick={() => handleDelete(p.barcode)} style={{ padding: '8px 14px', background: 'rgba(255, 59, 48, 0.15)', color: colors.accentRed, border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>
-                      ✕
-                    </button>
+                  <td style={{ padding: '14px', textAlign: 'right' }}>
+                    <div style={{ display: 'inline-flex', gap: '8px' }}>
+                      <button type="button" className="drix-btn" onClick={() => openEditModal(p)} style={{ padding: '7px 13px', background: 'rgba(245, 158, 11, 0.15)', color: colors.accentOrange, border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '700', fontSize: '0.82rem' }}>
+                        Edit
+                      </button>
+                      <button type="button" className="drix-btn" onClick={() => setBarcodePreview(p)} style={{ padding: '7px 13px', background: 'rgba(59, 130, 246, 0.15)', color: colors.accentBlue, border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '700', fontSize: '0.82rem' }}>
+                        🏷️ Tags
+                      </button>
+                      <button type="button" className="drix-btn" onClick={() => handleDelete(p.barcode, p.name)} style={{ padding: '7px 12px', background: 'rgba(239, 68, 68, 0.15)', color: colors.accentRed, border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '700', fontSize: '0.82rem' }}>
+                        ✕
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -397,49 +455,56 @@ export default function Inventory({ theme }) {
         </div>
       </div>
 
-      {/* ---------------- FULL EDIT MODAL ---------------- */}
+      {/* ---------------- EDIT PRODUCT MODAL ---------------- */}
       {editProduct && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(10px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
-          <div style={{ background: isDark ? '#1c1c1e' : '#ffffff', padding: '30px', borderRadius: '24px', width: '400px', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)', border: `1px solid ${colors.glassBorder}` }}>
-            <h3 style={{ margin: '0 0 20px 0', color: colors.text }}>Edit Item Data</h3>
-            <form onSubmit={submitEdit} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(10px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+          <div style={{ background: isDark ? '#111827' : '#ffffff', padding: '28px', borderRadius: '22px', width: '420px', boxShadow: '0 25px 50px rgba(0,0,0,0.5)', border: `1px solid ${colors.glassBorder}` }}>
+            <h3 style={{ margin: '0 0 18px 0', color: colors.text }}>Edit Product Variant</h3>
+            <form onSubmit={submitEdit} style={{ display: 'flex', flexDirection: 'column', gap: '13px' }}>
               <div>
-                <label style={{ color: colors.textMuted, fontSize: '0.85rem' }}>Name:</label>
-                <input type="text" value={editProduct.name} onChange={(e) => setEditProduct({...editProduct, name: e.target.value})} required style={inputStyle}/>
-              </div>
-              
-              <div>
-                <label style={{ color: colors.textMuted, fontSize: '0.85rem' }}>Barcode Code:</label>
-                <input type="text" value={editProduct.barcode} onChange={(e) => setEditProduct({...editProduct, barcode: e.target.value})} required style={inputStyle}/>
+                <label style={{ color: colors.textMuted, fontSize: '0.8rem', fontWeight: '600' }}>Item Name</label>
+                <input type="text" value={editProduct.name} onChange={(e) => setEditProduct({ ...editProduct, name: e.target.value })} required style={{ ...inputStyle, marginTop: '4px' }} />
               </div>
 
-              <div style={{ display: 'flex', gap: '15px' }}>
-                <div style={{ flex: 1 }}>
-                  <label style={{ color: colors.textMuted, fontSize: '0.85rem' }}>Size:</label>
-                  <input type="text" value={editProduct.size} onChange={(e) => setEditProduct({...editProduct, size: e.target.value})} required style={inputStyle}/>
-                </div>
-                <div style={{ flex: 1 }}>
-                  <label style={{ color: colors.textMuted, fontSize: '0.85rem' }}>Color:</label>
-                  <input type="text" value={editProduct.color} onChange={(e) => setEditProduct({...editProduct, color: e.target.value})} required style={inputStyle}/>
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: '15px' }}>
-                <div style={{ flex: 1 }}>
-                  <label style={{ color: colors.textMuted, fontSize: '0.85rem' }}>Cost (₹):</label>
-                  <input type="number" onKeyDown={blockInvalidChars} min="0" step="0.01" value={editProduct.cost_price} onChange={(e) => setEditProduct({...editProduct, cost_price: e.target.value})} required style={inputStyle}/>
-                </div>
-                <div style={{ flex: 1 }}>
-                  <label style={{ color: colors.textMuted, fontSize: '0.85rem' }}>MRP (₹):</label>
-                  <input type="number" onKeyDown={blockInvalidChars} min="0" step="0.01" value={editProduct.price} onChange={(e) => setEditProduct({...editProduct, price: e.target.value})} required style={inputStyle}/>
-                </div>
-              </div>
               <div>
-                <label style={{ color: colors.textMuted, fontSize: '0.85rem' }}>Total Stock:</label>
-                <input type="number" onKeyDown={blockInvalidChars} min="0" value={editProduct.stock_quantity} onChange={(e) => setEditProduct({...editProduct, stock_quantity: e.target.value})} required style={inputStyle}/>
+                <label style={{ color: colors.textMuted, fontSize: '0.8rem', fontWeight: '600' }}>Barcode</label>
+                <input type="text" value={editProduct.barcode} onChange={(e) => setEditProduct({ ...editProduct, barcode: e.target.value })} required style={{ ...inputStyle, marginTop: '4px', fontFamily: 'monospace' }} />
               </div>
+
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ color: colors.textMuted, fontSize: '0.8rem', fontWeight: '600' }}>Size</label>
+                  <input type="text" value={editProduct.size} onChange={(e) => setEditProduct({ ...editProduct, size: e.target.value })} required style={{ ...inputStyle, marginTop: '4px' }} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={{ color: colors.textMuted, fontSize: '0.8rem', fontWeight: '600' }}>Color</label>
+                  <input type="text" value={editProduct.color} onChange={(e) => setEditProduct({ ...editProduct, color: e.target.value })} required style={{ ...inputStyle, marginTop: '4px' }} />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ color: colors.textMuted, fontSize: '0.8rem', fontWeight: '600' }}>Cost Price (₹)</label>
+                  <input type="number" onKeyDown={blockInvalidChars} min="0" step="0.01" value={editProduct.cost_price} onChange={(e) => setEditProduct({ ...editProduct, cost_price: e.target.value })} required style={{ ...inputStyle, marginTop: '4px' }} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={{ color: colors.textMuted, fontSize: '0.8rem', fontWeight: '600' }}>Selling MRP (₹)</label>
+                  <input type="number" onKeyDown={blockInvalidChars} min="0" step="0.01" value={editProduct.price} onChange={(e) => setEditProduct({ ...editProduct, price: e.target.value })} required style={{ ...inputStyle, marginTop: '4px' }} />
+                </div>
+              </div>
+
+              <div>
+                <label style={{ color: colors.textMuted, fontSize: '0.8rem', fontWeight: '600' }}>Stock Quantity</label>
+                <input type="number" onKeyDown={blockInvalidChars} min="0" value={editProduct.stock_quantity} onChange={(e) => setEditProduct({ ...editProduct, stock_quantity: e.target.value })} required style={{ ...inputStyle, marginTop: '4px' }} />
+              </div>
+
               <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
-                <button type="button" onClick={() => setEditProduct(null)} style={{ flex: 1, padding: '14px', background: colors.inputBg, border: 'none', color: colors.text, borderRadius: '12px', cursor: 'pointer', fontWeight: 'bold' }}>Cancel</button>
-                <button type="submit" style={{ flex: 1, padding: '14px', background: colors.accentBlue, color: 'white', border: 'none', borderRadius: '12px', cursor: 'pointer', fontWeight: 'bold' }}>Save Changes</button>
+                <button type="button" className="drix-btn" onClick={() => setEditProduct(null)} style={{ flex: 1, padding: '12px', background: colors.inputBg, border: `1px solid ${colors.glassBorder}`, color: colors.text, borderRadius: '12px', cursor: 'pointer', fontWeight: '700' }}>
+                  Cancel
+                </button>
+                <button type="submit" className="drix-btn" style={{ flex: 1, padding: '12px', background: colors.accentBlue, color: 'white', border: 'none', borderRadius: '12px', cursor: 'pointer', fontWeight: '700' }}>
+                  Save Changes
+                </button>
               </div>
             </form>
           </div>
@@ -448,23 +513,41 @@ export default function Inventory({ theme }) {
 
       {/* ---------------- BARCODE PRINT MODAL ---------------- */}
       {barcodePreview && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(10px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
-          <div style={{ background: isDark ? '#1c1c1e' : '#ffffff', padding: '30px', borderRadius: '24px', width: '350px', textAlign: 'center', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)', border: `1px solid ${colors.glassBorder}` }}>
-            <h3 style={{ margin: '0 0 20px 0', color: colors.text }}>Print Labels</h3>
-            <div style={{ padding: '20px', border: `2px dashed ${colors.glassBorder}`, background: isDark ? 'rgba(0,0,0,0.3)' : '#f9f9f9', borderRadius: '16px', marginBottom: '25px' }}>
-              <p style={{ margin: '0 0 10px 0', fontSize: '13px', fontWeight: 'bold', color: colors.text }}>{barcodePreview.name} ({barcodePreview.size})</p>
-              <div style={{ background: 'white', padding: '10px', borderRadius: '8px', display: 'inline-block' }}>
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(10px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+          <div style={{ background: isDark ? '#111827' : '#ffffff', padding: '28px', borderRadius: '22px', width: '360px', textAlign: 'center', boxShadow: '0 25px 50px rgba(0,0,0,0.5)', border: `1px solid ${colors.glassBorder}` }}>
+            <h3 style={{ margin: '0 0 18px 0', color: colors.text }}>Print Barcode Labels</h3>
+
+            <div id="drix-print-area" style={{ padding: '18px', border: `2px dashed ${colors.glassBorder}`, background: '#ffffff', color: '#000000', borderRadius: '14px', marginBottom: '20px' }}>
+              <p style={{ margin: '0 0 6px 0', fontSize: '13px', fontWeight: '800', color: '#000' }}>
+                {barcodePreview.name} ({barcodePreview.size})
+              </p>
+              <div style={{ background: 'white', padding: '6px', display: 'inline-block' }}>
                 <svg ref={barcodeRef}></svg>
               </div>
-              <p style={{ margin: '10px 0 0 0', fontSize: '15px', fontWeight: 'bold', color: colors.text }}>MRP: ₹{barcodePreview.price}</p>
+              <p style={{ margin: '6px 0 0 0', fontSize: '15px', fontWeight: '900', color: '#000' }}>
+                MRP: ₹{barcodePreview.price}
+              </p>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '15px', marginBottom: '25px' }}>
-              <label style={{ fontWeight: 'bold', color: colors.text }}>Copies:</label>
-              <input type="number" onKeyDown={blockInvalidChars} min="1" value={printCopies} onChange={(e) => setPrintCopies(e.target.value)} style={{ width: '80px', padding: '10px', background: colors.inputBg, border: `1px solid ${colors.glassBorder}`, color: colors.text, borderRadius: '8px', textAlign: 'center', fontWeight: 'bold', outline: 'none' }} />
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px', marginBottom: '20px' }}>
+              <label style={{ fontWeight: '700', color: colors.text }}>Copies:</label>
+              <input
+                type="number"
+                onKeyDown={blockInvalidChars}
+                min="1"
+                value={printCopies}
+                onChange={(e) => setPrintCopies(e.target.value)}
+                style={{ width: '80px', padding: '9px', background: colors.inputBg, border: `1px solid ${colors.glassBorder}`, color: colors.text, borderRadius: '10px', textAlign: 'center', fontWeight: '800', outline: 'none' }}
+              />
             </div>
+
             <div style={{ display: 'flex', gap: '10px' }}>
-              <button onClick={() => { setBarcodePreview(null); setPrintCopies(1); }} style={{ flex: 1, padding: '14px', background: colors.inputBg, color: colors.text, border: 'none', borderRadius: '12px', cursor: 'pointer', fontWeight: 'bold' }}>Cancel</button>
-              <button onClick={handleActualPrint} style={{ flex: 2, padding: '14px', background: colors.text, color: isDark ? '#000' : '#fff', border: 'none', borderRadius: '12px', fontWeight: 'bold', cursor: 'pointer' }}>Print 🖨️</button>
+              <button type="button" className="drix-btn" onClick={() => { setBarcodePreview(null); setPrintCopies(1); }} style={{ flex: 1, padding: '12px', background: colors.inputBg, color: colors.text, border: `1px solid ${colors.glassBorder}`, borderRadius: '12px', cursor: 'pointer', fontWeight: '700' }}>
+                Cancel
+              </button>
+              <button type="button" className="drix-btn" onClick={handleActualPrint} style={{ flex: 2, padding: '12px', background: colors.accentBlue, color: '#fff', border: 'none', borderRadius: '12px', fontWeight: '800', cursor: 'pointer' }}>
+                Print Labels 🖨️
+              </button>
             </div>
           </div>
         </div>
