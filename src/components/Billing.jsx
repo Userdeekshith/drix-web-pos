@@ -6,6 +6,9 @@ const blockInvalidChars = (e) => {
   }
 };
 
+const getVariantKey = (item) =>
+  item._id ? String(item._id) : `${item.barcode}__${item.size || ''}__${item.color || ''}`;
+
 export default function Billing({ theme, storeDetails }) {
   const [cart, setCart] = useState([]);
   const [catalog, setCatalog] = useState([]);
@@ -16,6 +19,9 @@ export default function Billing({ theme, storeDetails }) {
   const [customerMobile, setCustomerMobile] = useState('');
   const [paymentMode, setPaymentMode] = useState('CASH');
 
+  // Smart Size Selector Modal when multiple sizes share the same barcode (e.g. 3438)
+  const [sizePickerOptions, setSizePickerOptions] = useState(null);
+
   const [showPreview, setShowPreview] = useState(false);
   const [previewData, setPreviewData] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -25,9 +31,11 @@ export default function Billing({ theme, storeDetails }) {
   const barcodeTimeout = useRef(null);
   const latestShowPreview = useRef(showPreview);
   const latestIsReturnMode = useRef(isReturnMode);
+  const latestSizePicker = useRef(sizePickerOptions);
 
   useEffect(() => { latestShowPreview.current = showPreview; }, [showPreview]);
   useEffect(() => { latestIsReturnMode.current = isReturnMode; }, [isReturnMode]);
+  useEffect(() => { latestSizePicker.current = sizePickerOptions; }, [sizePickerOptions]);
 
   const notify = (text, type = 'error') => {
     if (window.drixNotify) window.drixNotify(text, type);
@@ -43,7 +51,25 @@ export default function Billing({ theme, storeDetails }) {
     loadCatalog();
   }, []);
 
-  // Global Hardware Barcode Scanner & Keyboard Shortcuts (F2 / F4 / Esc)
+  // Resolves a scanned or typed barcode: if multiple sizes share the barcode, opens Size Picker
+  const resolveBarcodeScan = async (rawCode) => {
+    const cleanCode = String(rawCode || '').trim();
+    if (!cleanCode) return;
+
+    const matches = await window.posAPI.getProductsByBarcode(cleanCode);
+    if (!matches || matches.length === 0) {
+      return notify(`Barcode "${cleanCode}" not found!`, 'error');
+    }
+
+    if (matches.length === 1) {
+      addToCart(matches[0]);
+    } else {
+      // Multiple sizes share this barcode -> show instant Size Picker Modal
+      setSizePickerOptions(matches);
+    }
+  };
+
+  // Global Hardware Barcode Scanner & Keyboard Shortcuts
   useEffect(() => {
     const handleGlobalScan = async (e) => {
       if (e.key === 'F2') {
@@ -51,6 +77,23 @@ export default function Billing({ theme, storeDetails }) {
         searchInputRef.current?.focus();
         return;
       }
+
+      // Keyboard number shortcuts (1-9) when Size Picker Modal is open
+      if (latestSizePicker.current) {
+        if (e.key === 'Escape') {
+          setSizePickerOptions(null);
+          return;
+        }
+        const num = parseInt(e.key, 10);
+        if (num >= 1 && num <= latestSizePicker.current.length) {
+          e.preventDefault();
+          const chosen = latestSizePicker.current[num - 1];
+          setSizePickerOptions(null);
+          addToCart(chosen);
+        }
+        return;
+      }
+
       if (e.key === 'Escape' && latestShowPreview.current) {
         setShowPreview(false);
         return;
@@ -64,19 +107,17 @@ export default function Billing({ theme, storeDetails }) {
       }
 
       if (e.key === 'Enter') {
-        if (barcodeBuffer.current.length >= 3) {
+        if (barcodeBuffer.current.length >= 2) {
           const cleanBarcode = barcodeBuffer.current.trim();
           barcodeBuffer.current = '';
-          const product = await window.posAPI.getProductByBarcode(cleanBarcode);
-          if (!product) return notify(`Barcode ${cleanBarcode} not found!`, 'error');
-          addToCart(product);
+          await resolveBarcodeScan(cleanBarcode);
         }
       } else if (e.key.length === 1) {
         barcodeBuffer.current += e.key;
         clearTimeout(barcodeTimeout.current);
         barcodeTimeout.current = setTimeout(() => {
           barcodeBuffer.current = '';
-        }, 150);
+        }, 120);
       }
     };
 
@@ -87,31 +128,30 @@ export default function Billing({ theme, storeDetails }) {
     };
   }, []);
 
-  // FIXED: Uses unique `barcode` instead of `undefined` product.id
   const addToCart = (product) => {
-    const code = String(product.barcode);
+    const vKey = getVariantKey(product);
     const availableStock = Number(product.stock_quantity || 0);
 
     if (availableStock <= 0 && !latestIsReturnMode.current) {
-      return notify(`Cannot add "${product.name}". Item is OUT OF STOCK!`, 'error');
+      return notify(`Cannot add "${product.name}" (${product.size}). OUT OF STOCK!`, 'error');
     }
 
     setCart((prev) => {
-      const existing = prev.find((item) => String(item.barcode) === code);
+      const existing = prev.find((item) => getVariantKey(item) === vKey);
       if (existing) {
         if (existing.qty >= availableStock && !latestIsReturnMode.current) {
-          notify(`Only ${availableStock} unit(s) of ${product.name} available in stock!`, 'warning');
+          notify(`Only ${availableStock} unit(s) of ${product.name} (${product.size}) in stock!`, 'warning');
           return prev;
         }
         return prev.map((item) =>
-          String(item.barcode) === code ? { ...item, qty: item.qty + 1 } : item
+          getVariantKey(item) === vKey ? { ...item, qty: item.qty + 1 } : item
         );
       }
       return [
         ...prev,
         {
           ...product,
-          barcode: code,
+          variantKey: vKey,
           qty: 1,
           price: Number(product.price || 0),
           cost_price: Number(product.cost_price || 0),
@@ -121,16 +161,14 @@ export default function Billing({ theme, storeDetails }) {
     });
   };
 
-  // FIXED: Updates quantity accurately by `barcode`
-  const updateQty = (barcode, delta) => {
-    const code = String(barcode);
+  const updateQty = (vKey, delta) => {
     setCart((prev) =>
       prev
         .map((item) => {
-          if (String(item.barcode) === code) {
+          if (getVariantKey(item) === vKey) {
             const newQty = item.qty + delta;
             if (newQty > item.stock_quantity && delta > 0 && !isReturnMode) {
-              notify(`Cannot increase. Only ${item.stock_quantity} unit(s) in stock!`, 'warning');
+              notify(`Cannot increase. Only ${item.stock_quantity} unit(s) of Size ${item.size} in stock!`, 'warning');
               return item;
             }
             return { ...item, qty: newQty };
@@ -146,26 +184,51 @@ export default function Billing({ theme, storeDetails }) {
     const query = manualBarcode.trim();
     if (!query) return;
 
-    // 1. Exact barcode match
-    let product = await window.posAPI.getProductByBarcode(query);
-
-    // 2. Fallback: match by product name if user typed a name
-    if (!product) {
-      const lower = query.toLowerCase();
-      product = catalog.find(
+    // Check if user selected a specific variant from the datalist ("3438 | Size: M")
+    if (query.includes('| Size:')) {
+      const [codePart, sizePart] = query.split('| Size:');
+      const cleanCode = codePart.trim();
+      const cleanSize = sizePart.split('(')[0].trim();
+      const exactVariant = catalog.find(
         (p) =>
-          String(p.barcode).toLowerCase() === lower ||
-          (p.name && p.name.toLowerCase().includes(lower))
+          String(p.barcode).toLowerCase() === cleanCode.toLowerCase() &&
+          String(p.size).toLowerCase() === cleanSize.toLowerCase()
       );
+      if (exactVariant) {
+        addToCart(exactVariant);
+        setManualBarcode('');
+        searchInputRef.current?.focus();
+        return;
+      }
     }
 
-    if (!product) {
-      notify(`Item or Barcode "${query}" not found!`, 'error');
+    // 1. Check barcode matches
+    const barcodeMatches = await window.posAPI.getProductsByBarcode(query);
+    if (barcodeMatches.length === 1) {
+      addToCart(barcodeMatches[0]);
+      setManualBarcode('');
+      searchInputRef.current?.focus();
+      return;
+    } else if (barcodeMatches.length > 1) {
+      setSizePickerOptions(barcodeMatches);
       setManualBarcode('');
       return;
     }
 
-    addToCart(product);
+    // 2. Fallback: Search by product name
+    const lower = query.toLowerCase();
+    const nameMatches = catalog.filter(
+      (p) => p.name && p.name.toLowerCase().includes(lower)
+    );
+
+    if (nameMatches.length === 1) {
+      addToCart(nameMatches[0]);
+    } else if (nameMatches.length > 1) {
+      setSizePickerOptions(nameMatches);
+    } else {
+      notify(`Item or Barcode "${query}" not found!`, 'error');
+    }
+
     setManualBarcode('');
     searchInputRef.current?.focus();
   };
@@ -254,13 +317,17 @@ export default function Billing({ theme, storeDetails }) {
         );
       } else {
         const res = await window.posAPI.checkout(previewData);
-        await window.posAPI.printReceipt(previewData);
-        notify(
-          res.offlineSaved
-            ? 'Sale saved to Offline Queue & receipt printed!'
-            : 'Sale completed & receipt printed!',
-          'success'
-        );
+        const printRes = await window.posAPI.printReceipt(previewData);
+        if (printRes && printRes.success === false) {
+          notify('Sale saved, but printer did not respond. Check printer selection in Settings.', 'warning');
+        } else {
+          notify(
+            res.offlineSaved
+              ? 'Sale saved to Offline Queue & receipt printed!'
+              : 'Sale completed & receipt printed!',
+            'success'
+          );
+        }
       }
 
       setCart([]);
@@ -349,8 +416,8 @@ export default function Billing({ theme, storeDetails }) {
           />
           <datalist id="drix-catalog-suggestions">
             {catalog.map((p) => (
-              <option key={p._id || p.barcode} value={p.barcode}>
-                {p.name} ({p.size}/{p.color}) - ₹{p.price} [Stock: {p.stock_quantity}]
+              <option key={getVariantKey(p)} value={`${p.barcode} | Size: ${p.size}`}>
+                {p.name} ({p.color}) - ₹{p.price} [Stock: {p.stock_quantity}]
               </option>
             ))}
           </datalist>
@@ -375,51 +442,54 @@ export default function Billing({ theme, storeDetails }) {
               </tr>
             </thead>
             <tbody>
-              {cart.map((item) => (
-                <tr key={item.barcode} style={{ borderBottom: `1px solid ${colors.glassBorder}` }}>
-                  <td style={{ padding: '14px', color: colors.text }}>
-                    <div style={{ fontWeight: '700' }}>{item.name}</div>
-                    <small style={{ color: colors.textMuted, fontFamily: 'monospace' }}>
-                      #{item.barcode} • {item.size || '-'} / {item.color || '-'}
-                    </small>
-                  </td>
-                  <td style={{ padding: '14px', color: colors.text, fontWeight: '600' }}>₹{Number(item.price).toFixed(2)}</td>
-                  <td style={{ padding: '14px' }}>
-                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', background: colors.inputBg, padding: '4px 8px', borderRadius: '10px', border: `1px solid ${colors.glassBorder}` }}>
+              {cart.map((item) => {
+                const vKey = getVariantKey(item);
+                return (
+                  <tr key={vKey} style={{ borderBottom: `1px solid ${colors.glassBorder}` }}>
+                    <td style={{ padding: '14px', color: colors.text }}>
+                      <div style={{ fontWeight: '700' }}>{item.name}</div>
+                      <small style={{ color: colors.textMuted, fontFamily: 'monospace' }}>
+                        #{item.barcode} • Size: <strong>{item.size || '-'}</strong> / {item.color || '-'}
+                      </small>
+                    </td>
+                    <td style={{ padding: '14px', color: colors.text, fontWeight: '600' }}>₹{Number(item.price).toFixed(2)}</td>
+                    <td style={{ padding: '14px' }}>
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', background: colors.inputBg, padding: '4px 8px', borderRadius: '10px', border: `1px solid ${colors.glassBorder}` }}>
+                        <button
+                          type="button"
+                          className="drix-btn"
+                          onClick={() => updateQty(vKey, -1)}
+                          style={{ width: '28px', height: '28px', borderRadius: '6px', background: 'rgba(255,255,255,0.06)', border: 'none', color: colors.text, cursor: 'pointer', fontWeight: '800', fontSize: '1rem' }}
+                        >
+                          −
+                        </button>
+                        <span style={{ fontWeight: '700', color: colors.text, minWidth: '24px', textAlign: 'center' }}>{item.qty}</span>
+                        <button
+                          type="button"
+                          className="drix-btn"
+                          onClick={() => updateQty(vKey, 1)}
+                          style={{ width: '28px', height: '28px', borderRadius: '6px', background: 'rgba(59, 130, 246, 0.15)', border: 'none', color: colors.accentBlue, cursor: 'pointer', fontWeight: '800', fontSize: '1rem' }}
+                        >
+                          +
+                        </button>
+                      </div>
+                    </td>
+                    <td style={{ padding: '14px', color: colors.text, fontWeight: '800' }}>
+                      ₹{(Number(item.price) * Number(item.qty)).toFixed(2)}
+                    </td>
+                    <td style={{ padding: '14px', textAlign: 'right' }}>
                       <button
                         type="button"
                         className="drix-btn"
-                        onClick={() => updateQty(item.barcode, -1)}
-                        style={{ width: '28px', height: '28px', borderRadius: '6px', background: 'rgba(255,255,255,0.06)', border: 'none', color: colors.text, cursor: 'pointer', fontWeight: '800', fontSize: '1rem' }}
+                        onClick={() => updateQty(vKey, -item.qty)}
+                        style={{ color: colors.accentRed, border: 'none', background: 'rgba(239, 68, 68, 0.12)', padding: '7px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: '700', fontSize: '0.82rem' }}
                       >
-                        −
+                        Remove
                       </button>
-                      <span style={{ fontWeight: '700', color: colors.text, minWidth: '24px', textAlign: 'center' }}>{item.qty}</span>
-                      <button
-                        type="button"
-                        className="drix-btn"
-                        onClick={() => updateQty(item.barcode, 1)}
-                        style={{ width: '28px', height: '28px', borderRadius: '6px', background: 'rgba(59, 130, 246, 0.15)', border: 'none', color: colors.accentBlue, cursor: 'pointer', fontWeight: '800', fontSize: '1rem' }}
-                      >
-                        +
-                      </button>
-                    </div>
-                  </td>
-                  <td style={{ padding: '14px', color: colors.text, fontWeight: '800' }}>
-                    ₹{(Number(item.price) * Number(item.qty)).toFixed(2)}
-                  </td>
-                  <td style={{ padding: '14px', textAlign: 'right' }}>
-                    <button
-                      type="button"
-                      className="drix-btn"
-                      onClick={() => updateQty(item.barcode, -item.qty)}
-                      style={{ color: colors.accentRed, border: 'none', background: 'rgba(239, 68, 68, 0.12)', padding: '7px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: '700', fontSize: '0.82rem' }}
-                    >
-                      Remove
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                  </tr>
+                );
+              })}
               {cart.length === 0 && (
                 <tr>
                   <td colSpan="5" style={{ padding: '60px 20px', textAlign: 'center', color: colors.textMuted }}>
@@ -547,7 +617,68 @@ export default function Billing({ theme, storeDetails }) {
         </button>
       </div>
 
-      {/* ---------------- RECEIPT PREVIEW & THERMAL PRINT MODAL ---------------- */}
+      {/* ---------------- SMART MULTI-SIZE SELECTOR MODAL ---------------- */}
+      {sizePickerOptions && (
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(10px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1200 }}>
+          <div style={{ background: isDark ? '#111827' : '#ffffff', border: `1px solid ${colors.glassBorder}`, borderRadius: '22px', padding: '26px', width: '440px', boxShadow: '0 25px 60px rgba(0,0,0,0.55)', color: colors.text }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: '800' }}>
+                Select Size Variant (#{sizePickerOptions[0]?.barcode})
+              </h3>
+              <button type="button" onClick={() => setSizePickerOptions(null)} style={{ background: 'none', border: 'none', color: colors.textMuted, fontSize: '1.3rem', cursor: 'pointer' }}>✕</button>
+            </div>
+            <p style={{ margin: '0 0 16px 0', fontSize: '0.85rem', color: colors.textMuted }}>
+              Multiple sizes share this barcode. Click a size or press <strong>1–{sizePickerOptions.length}</strong> on your keyboard:
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '320px', overflowY: 'auto' }}>
+              {sizePickerOptions.map((variant, idx) => {
+                const outOfStock = Number(variant.stock_quantity || 0) <= 0 && !isReturnMode;
+                return (
+                  <button
+                    key={getVariantKey(variant)}
+                    type="button"
+                    className="drix-btn"
+                    disabled={outOfStock}
+                    onClick={() => {
+                      setSizePickerOptions(null);
+                      addToCart(variant);
+                      searchInputRef.current?.focus();
+                    }}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '14px 16px',
+                      borderRadius: '12px',
+                      background: colors.inputBg,
+                      border: `1px solid ${colors.glassBorder}`,
+                      color: outOfStock ? colors.textMuted : colors.text,
+                      cursor: outOfStock ? 'not-allowed' : 'pointer',
+                      opacity: outOfStock ? 0.5 : 1,
+                      textAlign: 'left'
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: '800', fontSize: '1rem' }}>
+                        [{idx + 1}] {variant.name} — Size: <span style={{ color: colors.accentBlue }}>{variant.size}</span>
+                      </div>
+                      <div style={{ fontSize: '0.8rem', color: colors.textMuted }}>
+                        Color: {variant.color || '-'} • MRP: ₹{variant.price}
+                      </div>
+                    </div>
+                    <span style={{ padding: '4px 10px', borderRadius: '99px', fontSize: '0.8rem', fontWeight: '800', background: outOfStock ? 'rgba(239,68,68,0.15)' : 'rgba(16,185,129,0.15)', color: outOfStock ? colors.accentRed : colors.accentGreen }}>
+                      {outOfStock ? 'Out of Stock' : `${variant.stock_quantity} in Stock`}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------- RECEIPT PREVIEW MODAL ---------------- */}
       {showPreview && previewData && (
         <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(10px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
           <div style={{ background: '#fff', width: '380px', borderRadius: '18px', overflow: 'hidden', display: 'flex', flexDirection: 'column', maxHeight: '92vh', boxShadow: '0 25px 50px rgba(0,0,0,0.5)' }}>
@@ -556,7 +687,6 @@ export default function Billing({ theme, storeDetails }) {
               <button type="button" onClick={() => setShowPreview(false)} style={{ background: 'none', border: 'none', fontSize: '1.2rem', cursor: 'pointer', color: '#64748b' }}>✕</button>
             </div>
 
-            {/* ISOLATED PRINT AREA FOR 80MM THERMAL PRINTER */}
             <div id="drix-print-area" style={{ padding: '20px', overflowY: 'auto', flex: 1, fontFamily: 'monospace', fontSize: '13px', color: '#000', background: '#fff' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#444', marginBottom: '8px' }}>
                 <span>{previewData.type === 'RETURN' ? 'CREDIT NOTE' : 'ORIGINAL FOR RECIPIENT'}</span>
@@ -616,33 +746,10 @@ export default function Billing({ theme, storeDetails }) {
                   </div>
                 )}
 
-                {previewData.tax_rate > 0 && (
-                  <>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-                      <span>CGST @ {(previewData.tax_rate / 2).toFixed(2)}%</span>
-                      <span>₹{previewData.cgst.toFixed(2)}</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                      <span>SGST @ {(previewData.tax_rate / 2).toFixed(2)}%</span>
-                      <span>₹{previewData.sgst.toFixed(2)}</span>
-                    </div>
-                  </>
-                )}
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #000', borderBottom: '1px solid #000', padding: '6px 0', fontWeight: 'bold', fontSize: '15px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #000', borderBottom: '1px solid #000', padding: '6px 0', fontWeight: 'bold', fontSize: '15px', marginTop: '6px' }}>
                   <span>Total Amount</span>
                   <span>₹{previewData.total_amount.toFixed(2)}</span>
                 </div>
-              </div>
-
-              <div style={{ marginTop: '14px', fontSize: '11px' }}>
-                <p style={{ margin: '0 0 4px 0', fontWeight: 'bold' }}>Terms & Conditions</p>
-                <ol style={{ margin: 0, paddingLeft: '15px' }}>
-                  <li>Exchange within 7 days with original bill.</li>
-                  <li>No cash refund, exchange only.</li>
-                  <li>Price tag must be intact.</li>
-                </ol>
-                <p style={{ textAlign: 'center', marginTop: '12px', fontWeight: 'bold' }}>Thank you for shopping with us!</p>
               </div>
             </div>
 
@@ -672,7 +779,7 @@ export default function Billing({ theme, storeDetails }) {
                   onClick={confirmAndPrint}
                   style={{ flex: 2, padding: '12px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: '10px', cursor: isProcessing ? 'wait' : 'pointer', fontWeight: '800' }}
                 >
-                  {isProcessing ? 'Processing...' : 'Confirm & Print 🖨️'}
+                  {isProcessing ? 'Printing...' : 'Confirm & Print 🖨️'}
                 </button>
               </div>
             </div>

@@ -74,7 +74,6 @@ export default function Inventory({ theme }) {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
 
-  // FIXED: Passes actual File object to Base64 converter so images work on both Web & Electron
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
@@ -97,15 +96,38 @@ export default function Inventory({ theme }) {
     }
   };
 
+  // Copies the first variant's barcode by default so you can easily use 1 barcode for all sizes
   const addVariantRow = () => {
+    const defaultSizes = ['M', 'L', 'XL', 'XXL', '3XL'];
+    const nextSize = defaultSizes[variants.length] || 'Free';
+    const baseBarcode = variants[0]?.barcode || Math.floor(1000 + Math.random() * 9000).toString();
     setVariants([
       ...variants,
       {
-        size: 'L',
-        quantity: '',
-        barcode: Math.floor(1000 + Math.random() * 9000).toString()
+        size: nextSize,
+        quantity: variants[0]?.quantity || '1',
+        barcode: baseBarcode
       }
     ]);
+  };
+
+  const copyFirstBarcodeToAll = () => {
+    if (variants.length === 0) return;
+    const base = variants[0].barcode.split('-')[0].trim();
+    setVariants(variants.map((v) => ({ ...v, barcode: base })));
+    notify(`Applied barcode "${base}" across all ${variants.length} sizes.`, 'info');
+  };
+
+  const autoSuffixBarcodesBySize = () => {
+    if (variants.length === 0) return;
+    const base = variants[0].barcode.split('-')[0].trim();
+    setVariants(
+      variants.map((v) => ({
+        ...v,
+        barcode: `${base}-${String(v.size || 'S').trim().toUpperCase()}`
+      }))
+    );
+    notify(`Generated size-specific barcodes (${base}-M, ${base}-L, etc.)!`, 'success');
   };
 
   const updateVariant = (index, field, value) => {
@@ -136,6 +158,8 @@ export default function Inventory({ theme }) {
       }
 
       let itemsAdded = 0;
+      let lastError = '';
+
       for (const variant of variants) {
         if (variant.quantity !== '' && variant.barcode) {
           const res = await window.posAPI.addProduct({
@@ -145,16 +169,21 @@ export default function Inventory({ theme }) {
             cost_price: Math.max(0, parseFloat(formData.cost_price || 0)),
             price: Math.max(0, parseFloat(formData.price || 0)),
             image_path: savedImagePath,
-            size: variant.size.trim(),
+            size: String(variant.size || '').trim().toUpperCase(),
             stock_quantity: Math.max(0, parseInt(variant.quantity, 10)),
             barcode: String(variant.barcode).trim()
           });
-          if (res && res.success !== false) itemsAdded++;
+
+          if (res && res.success !== false) {
+            itemsAdded++;
+          } else {
+            lastError = res?.error || 'Database rejected variant';
+          }
         }
       }
 
       if (itemsAdded > 0) {
-        notify(`${itemsAdded} product variant(s) saved to inventory!`, 'success');
+        notify(`Successfully saved ${itemsAdded} of ${variants.length} size variant(s) to inventory!`, 'success');
         setFormData({
           name: '',
           category: formData.category,
@@ -173,10 +202,10 @@ export default function Inventory({ theme }) {
         setSelectedFile(null);
         await loadProductsAndSettings();
       } else {
-        notify('Could not add product. Check that barcodes are unique.', 'error');
+        notify(`Could not add product: ${lastError || 'Check server connection'}`, 'error');
       }
     } catch (error) {
-      notify('Error adding product. Ensure barcodes are unique.', 'error');
+      notify('Error saving variants: ' + error.message, 'error');
     } finally {
       setIsSaving(false);
     }
@@ -185,16 +214,21 @@ export default function Inventory({ theme }) {
   const openEditModal = (product) => {
     setEditProduct({
       ...product,
-      originalBarcode: product.barcode
+      originalBarcode: product.barcode,
+      originalSize: product.size
     });
   };
 
   const submitEdit = async (e) => {
     e.preventDefault();
-    const res = await window.posAPI.updateProduct(editProduct.originalBarcode || editProduct.barcode, {
+    const identifier = editProduct._id || editProduct.originalBarcode || editProduct.barcode;
+    const res = await window.posAPI.updateProduct(identifier, {
+      _id: editProduct._id,
+      originalBarcode: editProduct.originalBarcode,
+      originalSize: editProduct.originalSize,
       name: editProduct.name,
       category: editProduct.category,
-      size: editProduct.size,
+      size: String(editProduct.size || '').trim().toUpperCase(),
       color: editProduct.color,
       cost_price: Math.max(0, parseFloat(editProduct.cost_price || 0)),
       price: Math.max(0, parseFloat(editProduct.price || 0)),
@@ -203,24 +237,24 @@ export default function Inventory({ theme }) {
     });
 
     if (res && res.success !== false) {
-      notify('Product updated successfully!', 'success');
+      notify('Variant updated successfully!', 'success');
       setEditProduct(null);
       loadProductsAndSettings();
     } else {
-      notify(res?.error || 'Failed to update product.', 'error');
+      notify(res?.error || 'Failed to update variant.', 'error');
     }
   };
 
-  const handleDelete = (barcode, name) => {
+  const handleDelete = (product) => {
     if (window.drixConfirm) {
       window.drixConfirm(
-        `Are you sure you want to permanently delete "${name}" (#${barcode})?`,
+        `Delete "${product.name}" (Size: ${product.size}, Barcode: #${product.barcode})?`,
         async () => {
-          await window.posAPI.deleteProduct(barcode);
-          notify(`Deleted "${name}" from inventory.`, 'info');
+          await window.posAPI.deleteProduct(product._id || product.barcode, product.size, product.color);
+          notify(`Deleted "${product.name}" (${product.size}) from inventory.`, 'info');
           loadProductsAndSettings();
         },
-        'Delete Inventory Item'
+        'Delete Inventory Variant'
       );
     }
   };
@@ -231,10 +265,11 @@ export default function Inventory({ theme }) {
       copies: parseInt(printCopies, 10) || 1
     });
     if (result.success) {
+      notify('Sent barcode labels to printer!', 'success');
       setBarcodePreview(null);
       setPrintCopies(1);
     } else {
-      notify('Print failed. Check printer connection.', 'error');
+      notify('Print failed. Check printer connection in Settings.', 'error');
     }
   };
 
@@ -245,7 +280,8 @@ export default function Inventory({ theme }) {
       String(p.barcode || '').toLowerCase().includes(q) ||
       String(p.name || '').toLowerCase().includes(q) ||
       String(p.category || '').toLowerCase().includes(q) ||
-      String(p.color || '').toLowerCase().includes(q)
+      String(p.color || '').toLowerCase().includes(q) ||
+      String(p.size || '').toLowerCase().includes(q)
     );
   });
 
@@ -320,7 +356,7 @@ export default function Inventory({ theme }) {
 
             <div>
               <label style={{ display: 'block', marginBottom: '5px', color: colors.textMuted, fontSize: '0.82rem', fontWeight: '600' }}>COLOR / VARIANT</label>
-              <input type="text" name="color" placeholder="e.g. Emerald Green" value={formData.color} onChange={handleChange} required style={inputStyle} />
+              <input type="text" name="color" placeholder="e.g. Red" value={formData.color} onChange={handleChange} required style={inputStyle} />
             </div>
 
             <div style={{ display: 'flex', gap: '12px' }}>
@@ -336,21 +372,45 @@ export default function Inventory({ theme }) {
 
             {/* VARIANT GENERATOR TABLE */}
             <div style={{ gridColumn: 'span 2', background: isDark ? 'rgba(0,0,0,0.22)' : 'rgba(255,255,255,0.45)', padding: '18px', borderRadius: '14px', border: `1px solid ${colors.glassBorder}` }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
                 <h4 style={{ margin: 0, color: colors.text, fontSize: '0.95rem' }}>Sizes, Stock & Barcodes</h4>
-                <button
-                  type="button"
-                  className="drix-btn"
-                  onClick={addVariantRow}
-                  style={{ padding: '7px 14px', background: 'rgba(59, 130, 246, 0.15)', color: colors.accentBlue, border: `1px solid rgba(59, 130, 246, 0.35)`, borderRadius: '10px', cursor: 'pointer', fontWeight: '700', fontSize: '0.84rem' }}
-                >
-                  + Add Size Variant
-                </button>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {variants.length > 1 && (
+                    <>
+                      <button
+                        type="button"
+                        className="drix-btn"
+                        onClick={copyFirstBarcodeToAll}
+                        title="Use the exact same barcode across all sizes"
+                        style={{ padding: '7px 12px', background: colors.inputBg, color: colors.textMuted, border: `1px solid ${colors.glassBorder}`, borderRadius: '10px', cursor: 'pointer', fontWeight: '700', fontSize: '0.78rem' }}
+                      >
+                        🔗 Same Barcode for All Sizes
+                      </button>
+                      <button
+                        type="button"
+                        className="drix-btn"
+                        onClick={autoSuffixBarcodesBySize}
+                        title="Append -M, -L, -XL to barcode for instant single-scan billing"
+                        style={{ padding: '7px 12px', background: colors.inputBg, color: colors.textMuted, border: `1px solid ${colors.glassBorder}`, borderRadius: '10px', cursor: 'pointer', fontWeight: '700', fontSize: '0.78rem' }}
+                      >
+                        🏷️ Auto-Suffix Sizes (-M, -L)
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    className="drix-btn"
+                    onClick={addVariantRow}
+                    style={{ padding: '7px 14px', background: 'rgba(59, 130, 246, 0.15)', color: colors.accentBlue, border: `1px solid rgba(59, 130, 246, 0.35)`, borderRadius: '10px', cursor: 'pointer', fontWeight: '700', fontSize: '0.84rem' }}
+                  >
+                    + Add Size Variant
+                  </button>
+                </div>
               </div>
 
               {variants.map((variant, index) => (
                 <div key={index} style={{ display: 'flex', gap: '10px', marginBottom: '10px', alignItems: 'center' }}>
-                  <input type="text" placeholder="Size (e.g. M, Free)" value={variant.size} onChange={(e) => updateVariant(index, 'size', e.target.value)} required style={{ ...inputStyle, flex: 1 }} />
+                  <input type="text" placeholder="Size (e.g. M)" value={variant.size} onChange={(e) => updateVariant(index, 'size', e.target.value)} required style={{ ...inputStyle, flex: 1 }} />
                   <input type="number" placeholder="Stock Qty" value={variant.quantity} onChange={(e) => updateVariant(index, 'quantity', e.target.value)} onKeyDown={blockInvalidChars} min="0" required style={{ ...inputStyle, flex: 1 }} />
                   <div style={{ display: 'flex', flex: 2, gap: '6px' }}>
                     <input type="text" placeholder="Barcode" value={variant.barcode} onChange={(e) => updateVariant(index, 'barcode', e.target.value)} required style={{ ...inputStyle, flex: 1, fontFamily: 'monospace' }} />
@@ -393,10 +453,10 @@ export default function Inventory({ theme }) {
           </h3>
           <input
             type="text"
-            placeholder="🔍 Search by barcode, name, category, or color..."
+            placeholder="🔍 Search by barcode, name, size, category, or color..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            style={{ ...inputStyle, maxWidth: '340px' }}
+            style={{ ...inputStyle, maxWidth: '360px' }}
           />
         </div>
 
@@ -414,42 +474,45 @@ export default function Inventory({ theme }) {
               </tr>
             </thead>
             <tbody>
-              {filteredProducts.map((p) => (
-                <tr key={p._id || p.barcode} style={{ borderBottom: `1px solid ${colors.glassBorder}` }}>
-                  <td style={{ padding: '10px 14px' }}>
-                    {p.image_path ? (
-                      <img src={p.image_path} alt="img" style={{ width: '42px', height: '42px', objectFit: 'cover', borderRadius: '8px' }} />
-                    ) : (
-                      <div style={{ width: '42px', height: '42px', borderRadius: '8px', background: colors.inputBg, display: 'flex', alignItems: 'center', justifyContent: 'center', color: colors.textMuted, fontSize: '0.75rem' }}>—</div>
-                    )}
-                  </td>
-                  <td style={{ padding: '14px', fontFamily: 'monospace', fontWeight: '700', color: colors.accentBlue }}>{p.barcode}</td>
-                  <td style={{ padding: '14px', fontWeight: '600', color: colors.text }}>
-                    {p.name}
-                    <div style={{ fontSize: '0.75rem', color: colors.textMuted }}>{p.category}</div>
-                  </td>
-                  <td style={{ padding: '14px', color: colors.text }}>{p.size} / {p.color}</td>
-                  <td style={{ padding: '14px', color: colors.text, fontWeight: '700' }}>₹{p.price}</td>
-                  <td style={{ padding: '14px' }}>
-                    <span style={{ color: p.stock_quantity <= 3 ? colors.accentRed : colors.accentGreen, fontWeight: '800', padding: '4px 10px', background: p.stock_quantity <= 3 ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)', borderRadius: '99px', fontSize: '0.85rem' }}>
-                      {p.stock_quantity}
-                    </span>
-                  </td>
-                  <td style={{ padding: '14px', textAlign: 'right' }}>
-                    <div style={{ display: 'inline-flex', gap: '8px' }}>
-                      <button type="button" className="drix-btn" onClick={() => openEditModal(p)} style={{ padding: '7px 13px', background: 'rgba(245, 158, 11, 0.15)', color: colors.accentOrange, border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '700', fontSize: '0.82rem' }}>
-                        Edit
-                      </button>
-                      <button type="button" className="drix-btn" onClick={() => setBarcodePreview(p)} style={{ padding: '7px 13px', background: 'rgba(59, 130, 246, 0.15)', color: colors.accentBlue, border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '700', fontSize: '0.82rem' }}>
-                        🏷️ Tags
-                      </button>
-                      <button type="button" className="drix-btn" onClick={() => handleDelete(p.barcode, p.name)} style={{ padding: '7px 12px', background: 'rgba(239, 68, 68, 0.15)', color: colors.accentRed, border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '700', fontSize: '0.82rem' }}>
-                        ✕
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {filteredProducts.map((p) => {
+                const rowKey = p._id || `${p.barcode}_${p.size}_${p.color}`;
+                return (
+                  <tr key={rowKey} style={{ borderBottom: `1px solid ${colors.glassBorder}` }}>
+                    <td style={{ padding: '10px 14px' }}>
+                      {p.image_path ? (
+                        <img src={p.image_path} alt="img" style={{ width: '42px', height: '42px', objectFit: 'cover', borderRadius: '8px' }} />
+                      ) : (
+                        <div style={{ width: '42px', height: '42px', borderRadius: '8px', background: colors.inputBg, display: 'flex', alignItems: 'center', justifyContent: 'center', color: colors.textMuted, fontSize: '0.75rem' }}>—</div>
+                      )}
+                    </td>
+                    <td style={{ padding: '14px', fontFamily: 'monospace', fontWeight: '700', color: colors.accentBlue }}>{p.barcode}</td>
+                    <td style={{ padding: '14px', fontWeight: '600', color: colors.text }}>
+                      {p.name}
+                      <div style={{ fontSize: '0.75rem', color: colors.textMuted }}>{p.category}</div>
+                    </td>
+                    <td style={{ padding: '14px', color: colors.text, fontWeight: '600' }}>{p.size} / {p.color}</td>
+                    <td style={{ padding: '14px', color: colors.text, fontWeight: '700' }}>₹{p.price}</td>
+                    <td style={{ padding: '14px' }}>
+                      <span style={{ color: p.stock_quantity <= 3 ? colors.accentRed : colors.accentGreen, fontWeight: '800', padding: '4px 10px', background: p.stock_quantity <= 3 ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)', borderRadius: '99px', fontSize: '0.85rem' }}>
+                        {p.stock_quantity}
+                      </span>
+                    </td>
+                    <td style={{ padding: '14px', textAlign: 'right' }}>
+                      <div style={{ display: 'inline-flex', gap: '8px' }}>
+                        <button type="button" className="drix-btn" onClick={() => openEditModal(p)} style={{ padding: '7px 13px', background: 'rgba(245, 158, 11, 0.15)', color: colors.accentOrange, border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '700', fontSize: '0.82rem' }}>
+                          Edit
+                        </button>
+                        <button type="button" className="drix-btn" onClick={() => setBarcodePreview(p)} style={{ padding: '7px 13px', background: 'rgba(59, 130, 246, 0.15)', color: colors.accentBlue, border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '700', fontSize: '0.82rem' }}>
+                          🏷️ Tags
+                        </button>
+                        <button type="button" className="drix-btn" onClick={() => handleDelete(p)} style={{ padding: '7px 12px', background: 'rgba(239, 68, 68, 0.15)', color: colors.accentRed, border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '700', fontSize: '0.82rem' }}>
+                          ✕
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
